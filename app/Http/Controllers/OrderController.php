@@ -8,6 +8,7 @@ use App\Models\CartItem;
 use App\Models\Product;
 use App\Models\Coupon;
 use App\Models\Location;
+use App\Models\StoreAddress;
 use App\Services\DeliveryFeeService;
 use App\Services\NotificationService;
 use Illuminate\Http\Request;
@@ -98,16 +99,22 @@ class OrderController extends Controller
         
         $validator = Validator::make($request->all(), [
             'payment_method' => 'required|string|in:card,bank_transfer,mobile_money,cash_on_delivery',
+            'payment_gateway' => 'required_if:payment_method,card|string',
+            'payment_reference' => 'required_if:payment_method,card|string',
             'delivery_method' => 'required|string|in:shipping,pickup',
             'coupon_code' => 'nullable|string|exists:coupons,code',
             'notes' => 'nullable|string',
             'customer_email' => 'nullable|email|max:255',
+            'customer_name' => 'required|string|max:255',
             'shipping_address' => 'required_if:delivery_method,shipping|string|max:255',
             'shipping_city' => 'required_if:delivery_method,shipping|string|max:100',
             'shipping_state' => 'required_if:delivery_method,shipping|string|max:100',
             'shipping_zip' => 'required_if:delivery_method,shipping|string|max:20',
             'shipping_phone' => 'required_if:delivery_method,shipping|string|max:20',
-            'pickup_location_id' => 'required_if:delivery_method,pickup|exists:locations,id',
+            'shipping_latitude' => 'nullable|numeric',
+            'shipping_longitude' => 'nullable|numeric',
+            'store_id' => 'nullable|exists:store_addresses,id',
+            'pickup_location_id' => 'required_if:delivery_method,pickup|exists:store_addresses,id',
         ]);
 
         if ($validator->fails()) {
@@ -121,147 +128,65 @@ class OrderController extends Controller
             return response()->json(['message' => 'Cart is empty'], 422);
         }
 
-        // Check product availability
-        foreach ($cartItems as $cartItem) {
-            $product = $cartItem->product;
-            $measurement = $cartItem->measurement;
-            
-            if (!$product->is_active) {
-                return response()->json([
-                    'message' => "Product '{$product->name}' is no longer available",
-                ], 422);
-            }
-            
-            $stock = $measurement ? $measurement->stock_quantity : $product->stock_quantity;
-            
-            if ($stock < $cartItem->quantity) {
-                return response()->json([
-                    'message' => "Not enough stock for '{$product->name}'",
-                ], 422);
+        // Calculate order subtotal from cart items
+        $subtotal = $this->calculateSubtotal($cartItems);
+        $taxAmount = $this->calculateTax($subtotal);
+        
+        // Calculate shipping fee if delivery method is shipping
+        $shippingFee = 0;
+        if ($request->delivery_method === 'shipping') {
+            try {
+                $deliveryDetails = $this->deliveryFeeService->calculateDeliveryFee(
+                    $subtotal,
+                    [$request->shipping_latitude, $request->shipping_longitude],
+                    $request->store_id
+                );
+                $shippingFee = $deliveryDetails['isDeliveryAvailable'] ? $deliveryDetails['fee'] : 500;
+            } catch (\Exception $e) {
+                \Log::error('Error calculating delivery fee', [
+                    'error' => $e->getMessage(),
+                    'data' => [
+                        'subtotal' => $subtotal,
+                        'location' => [
+                            $request->shipping_latitude,
+                            $request->shipping_longitude
+                        ],
+                        'store_id' => $request->store_id
+                    ]
+                ]);
+                // Use the shipping fee from frontend if provided, otherwise default to 500
+                $shippingFee = $request->shipping_fee ?? 500;
             }
         }
+
+        // Calculate discount if coupon provided
+        $discountAmount = 0;
+        $couponId = null;
+        if ($request->has('coupon_code')) {
+            $coupon = Coupon::where('code', $request->coupon_code)->first();
+            if ($coupon && $coupon->isValid($subtotal, $user->id)) {
+                $discountAmount = $coupon->calculateDiscount($subtotal);
+                $couponId = $coupon->id;
+                $coupon->increment('used_count');
+            }
+        }
+
+        // Calculate grand total using same formula as frontend
+        $grandTotal = $this->calculateTotal($subtotal, $taxAmount, $shippingFee, $discountAmount);
 
         DB::beginTransaction();
 
         try {
-            // Calculate order amounts
-            $totalAmount = 0;
-            $taxAmount = 0;
-            $shippingAmount = 0; // Initialize shipping amount
-            
-            foreach ($cartItems as $cartItem) {
-                $price = $cartItem->product->getCurrentPrice();
-                
-                // Apply measurement price adjustment if applicable
-                if ($cartItem->measurement && $cartItem->measurement->price_adjustment) {
-                    $price += $cartItem->measurement->price_adjustment;
-                }
-                
-                $totalAmount += $price * $cartItem->quantity;
-            }
-            
-            // Apply tax (example: 8%)
-            $taxAmount = $totalAmount * 0.08;
-            
-            // Calculate shipping fee based on delivery method
-            if ($request->delivery_method === 'shipping') {
-                // If shipping fee is already provided in the request, use it
-                if ($request->has('shipping_fee')) {
-                    $shippingAmount = (float) $request->shipping_fee;
-                    \Log::info('Using shipping fee from request', ['shipping_fee' => $shippingAmount]);
-                }
-                // Otherwise calculate it based on coordinates if available
-                else if ($request->has('shipping_latitude') && $request->has('shipping_longitude')) {
-                    $customerLocation = [
-                        $request->shipping_latitude,
-                        $request->shipping_longitude
-                    ];
-                    
-                    try {
-                        $deliveryDetails = $this->deliveryFeeService->calculateDeliveryFee(
-                            $totalAmount,
-                            $customerLocation,
-                            $request->store_id
-                        );
-                        
-                        // Only apply fee if delivery is available
-                        if ($deliveryDetails['isDeliveryAvailable']) {
-                            $shippingAmount = $deliveryDetails['fee'];
-                        } else {
-                            // Log the issue but continue with default fee instead of returning error
-                            \Log::warning('Delivery not available for location, using default fee', [
-                                'message' => $deliveryDetails['message'],
-                                'customer_location' => $customerLocation,
-                                'store_id' => $request->store_id
-                            ]);
-                            $shippingAmount = 500; // Default ₦500
-                        }
-                    } catch (\Exception $e) {
-                        \Log::error('Error calculating delivery fee', [
-                            'error' => $e->getMessage(),
-                            'location' => $customerLocation,
-                            'store_id' => $request->store_id
-                        ]);
-                        // Use default fee instead of failing
-                        $shippingAmount = 500; // Default ₦500
-                    }
-                } else {
-                    // Fallback to default shipping fee if coordinates not provided
-                    \Log::info('No coordinates provided for delivery fee calculation, using default fee');
-                    $shippingAmount = 500; // Default ₦500
-                }
-            }
-            
-            // Apply coupon if provided
-            $discountAmount = 0;
-            $couponId = null;
-            
-            // If discount is already provided in the request, use it
-            if ($request->has('discount')) {
-                $discountAmount = (float) $request->discount;
-                \Log::info('Using discount from request', ['discount' => $discountAmount]);
-            }
-            // Otherwise calculate it based on coupon code if available
-            else if ($request->has('coupon_code')) {
-                $coupon = Coupon::where('code', $request->coupon_code)->first();
-                
-                if ($coupon && $coupon->isValid($totalAmount, $user->id)) {
-                    $discountAmount = $coupon->calculateDiscount($totalAmount);
-                    $couponId = $coupon->id;
-                    
-                    // Increment coupon usage count
-                    $coupon->increment('used_count');
-                }
-            }
-            
-            // Calculate grand total
-            $grandTotal = $totalAmount + $taxAmount + $shippingAmount - $discountAmount;
-            
-            // Ensure all required fields are set
-            if ($totalAmount <= 0) {
-                throw new \Exception('Invalid order total amount');
-            }
-            
-            // Debug the values
-            \Log::info('Order values', [
-                'totalAmount' => $totalAmount,
-                'taxAmount' => $taxAmount,
-                'shippingAmount' => $shippingAmount,
-                'discountAmount' => $discountAmount,
-                'grandTotal' => $grandTotal,
-                'cartItems' => $cartItems->count()
-            ]);
-            
-            // Create order with explicit values for all required fields
+            // Create order with calculated values
             $orderData = [
                 'user_id' => $user->id,
                 'order_number' => 'ORD-' . strtoupper(Str::random(10)),
                 'status' => Order::STATUS_PENDING,
-                'subtotal' => (float) $totalAmount,
-                'discount' => (float) $discountAmount,
-                'tax' => (float) $taxAmount,
-                'shipping_fee' => (float) $shippingAmount,
-                'grand_total' => (float) $grandTotal,
+                'subtotal' => $subtotal,
+                'discount' => $discountAmount,
+                'tax' => $taxAmount,
+                'shipping_fee' => $shippingFee,
+                'grand_total' => $grandTotal,
                 'payment_method' => $request->payment_method,
                 'payment_status' => Order::PAYMENT_PENDING,
                 'delivery_method' => $request->delivery_method,
@@ -273,6 +198,8 @@ class OrderController extends Controller
                 'shipping_zip_code' => $request->shipping_zip,
                 'shipping_phone' => $request->shipping_phone,
                 'pickup_location_id' => $request->pickup_location_id,
+                'customer_name' => $request->customer_name,
+                'customer_email' => $request->customer_email,
             ];
             
             $order = Order::create($orderData);
@@ -369,6 +296,49 @@ class OrderController extends Controller
             DB::rollBack();
             return response()->json(['message' => 'Failed to create order: ' . $e->getMessage()], 500);
         }
+    }
+
+    /**
+     * Calculate order subtotal from cart items
+     *
+     * @param Collection $cartItems
+     * @return float
+     */
+    private function calculateSubtotal($cartItems)
+    {
+        $total = 0;
+        foreach ($cartItems as $item) {
+            $product = $item->product;
+            $price = $product->sale_price ?? $product->base_price ?? 0;
+            $total += floatval($price) * $item->quantity;
+        }
+        return $total;
+    }
+
+    /**
+     * Calculate tax amount
+     *
+     * @param float $subtotal
+     * @return float
+     */
+    private function calculateTax($subtotal)
+    {
+        $taxRate = 8; // Same 8% as frontend
+        return $subtotal * ($taxRate / 100);
+    }
+
+    /**
+     * Calculate total amount
+     *
+     * @param float $subtotal
+     * @param float $taxAmount
+     * @param float $shippingFee
+     * @param float $discountAmount
+     * @return float
+     */
+    private function calculateTotal($subtotal, $taxAmount, $shippingFee, $discountAmount)
+    {
+        return $subtotal + $taxAmount + $shippingFee - $discountAmount;
     }
 
     /**
