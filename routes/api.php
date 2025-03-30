@@ -47,6 +47,9 @@ Route::post('/auth/apple', [SocialAuthController::class, 'appleAuth']);
 Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
 Route::post('/reset-password', [AuthController::class, 'resetPassword']);
 
+// Settings routes
+Route::get('/settings/bank-transfer', [\App\Http\Controllers\SettingsController::class, 'getBankTransferSettings']);
+
 // Payment routes
 Route::post('/payments/paystack/initialize', [\App\Http\Controllers\PaystackController::class, 'initializePayment']);
 Route::post('/payments/paystack/verify', [\App\Http\Controllers\PaystackController::class, 'verifyPayment']);
