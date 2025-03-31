@@ -61,12 +61,12 @@ class StoreAddressController extends Controller
                 'opening_hours' => 'nullable|string',
                 'notes' => 'nullable|string',
                 'delivery_base_fee' => 'nullable|numeric',
-                'delivery_price_per_km' => 'nullable|numeric',
+                'delivery_fee_per_km' => 'nullable|numeric',
                 'free_delivery_threshold' => 'nullable|numeric',
                 'minimum_order_value' => 'nullable|numeric',
                 'offers_free_delivery' => 'boolean',
                 'delivery_radius_km' => 'nullable|integer',
-                'geofence_coordinates' => 'nullable|string'
+                'geofence_coordinates' => 'nullable|array'
             ]);
             
             if ($validator->fails()) {
@@ -146,12 +146,12 @@ class StoreAddressController extends Controller
                 'opening_hours' => 'nullable|string',
                 'notes' => 'nullable|string',
                 'delivery_base_fee' => 'nullable|numeric',
-                'delivery_price_per_km' => 'nullable|numeric',
+                'delivery_fee_per_km' => 'nullable|numeric',
                 'free_delivery_threshold' => 'nullable|numeric',
                 'minimum_order_value' => 'nullable|numeric',
                 'offers_free_delivery' => 'boolean',
                 'delivery_radius_km' => 'nullable|integer',
-                'geofence_coordinates' => 'nullable|string'
+                'geofence_coordinates' => 'nullable|array'
             ]);
             
             if ($validator->fails()) {
@@ -230,18 +230,17 @@ class StoreAddressController extends Controller
     }
 
     /**
-     * Find nearest pickup locations to a given latitude and longitude.
+     * Find nearest pickup locations to a given latitude and longitude for admin access.
      *
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\JsonResponse
      */
-    public function findNearestPickupLocations(Request $request)
+    public function findNearestLocations(Request $request)
     {
         try {
             $validator = Validator::make($request->all(), [
                 'latitude' => 'required|numeric',
                 'longitude' => 'required|numeric',
-                'max_distance' => 'nullable|numeric',
                 'limit' => 'nullable|integer|min:1|max:50'
             ]);
             
@@ -255,37 +254,57 @@ class StoreAddressController extends Controller
             
             $latitude = $request->input('latitude');
             $longitude = $request->input('longitude');
-            $maxDistance = $request->input('max_distance', 50); // Default 50km
             $limit = $request->input('limit', 10); // Default 10 locations
             
-            $pickupLocations = StoreAddress::where('is_pickup_location', true)
-                                           ->where('is_active', true)
-                                           ->get();
+            \Log::info('Finding nearest locations (admin)', [
+                'latitude' => $latitude,
+                'longitude' => $longitude
+            ]);
+
+            // Get all locations regardless of status for admin
+            $locations = StoreAddress::all();
             
-            // Calculate distance for each location
-            $locationsWithDistance = $pickupLocations->map(function($location) use ($latitude, $longitude) {
-                $distance = $location->distanceFrom($latitude, $longitude);
-                return [
-                    'location' => $location,
-                    'distance' => $distance
-                ];
-            })
-            ->filter(function($item) use ($maxDistance) {
-                return $item['distance'] !== null && $item['distance'] <= $maxDistance;
-            })
-            ->sortBy('distance')
-            ->take($limit)
-            ->values();
+            // Filter by geofence and add service availability
+            $locationsWithDistance = $locations
+                ->map(function($location) use ($latitude, $longitude) {
+                    $distance = $location->distanceFrom($latitude, $longitude);
+                    $inGeofence = $location->isPointInGeofence($latitude, $longitude);
+                    return [
+                        'location' => $location,
+                        'distance' => $distance,
+                        'inGeofence' => $inGeofence,
+                        'isPickupAvailable' => $location->is_pickup_location && $location->is_active,
+                        'isDeliveryAvailable' => $location->is_delivery_location && $location->is_active
+                    ];
+                })
+                ->filter(function($item) {
+                    return $item['distance'] !== null;
+                })
+                ->sortBy('distance')
+                ->take($limit)
+                ->values();
             
+            \Log::info('Found locations (admin)', [
+                'count' => count($locationsWithDistance),
+                'locations' => $locationsWithDistance->map(function($item) {
+                    return [
+                        'id' => $item['location']->id,
+                        'pickup' => $item['isPickupAvailable'],
+                        'delivery' => $item['isDeliveryAvailable'],
+                        'active' => $item['location']->is_active
+                    ];
+                })
+            ]);
+
             return response()->json([
                 'status' => 'success',
                 'data' => $locationsWithDistance
             ]);
         } catch (\Exception $e) {
-            Log::error('Error finding nearest pickup locations: ' . $e->getMessage());
+            Log::error('Error finding nearest locations (admin): ' . $e->getMessage());
             return response()->json([
                 'status' => 'error',
-                'message' => 'Failed to find nearest pickup locations: ' . $e->getMessage()
+                'message' => 'Failed to find nearest locations'
             ], 500);
         }
     }

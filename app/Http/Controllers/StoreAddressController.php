@@ -35,10 +35,11 @@ class StoreAddressController extends Controller
     }
 
     /**
-     * Find nearest pickup locations to a given latitude and longitude for public access.
+     * Check if a point is within this store's geofence.
      *
-     * @param  \Illuminate\Http\Request  $request
-     * @return \Illuminate\Http\JsonResponse
+     * @param float $latitude
+     * @param float $longitude
+     * @return bool
      */
     public function findNearestPickupLocations(Request $request)
     {
@@ -61,18 +62,21 @@ class StoreAddressController extends Controller
             $longitude = $request->input('longitude');
             $limit = $request->input('limit', 10); // Default 10 locations
             
-            \Log::info('Finding nearest pickup locations', [
+            \Log::info('Finding nearest locations', [
                 'latitude' => $latitude,
                 'longitude' => $longitude
             ]);
 
-            // Get all active pickup locations
-            $pickupLocations = StoreAddress::where('is_pickup_location', true)
-                                          ->where('is_active', true)
-                                          ->get();
+            // Get all active locations that offer either pickup or delivery
+            $locations = StoreAddress::where('is_active', true)
+                ->where(function($query) {
+                    $query->where('is_pickup_location', true)
+                          ->orWhere('is_delivery_location', true);
+                })
+                ->get();
             
-            // Filter by geofence and calculate distances
-            $locationsWithDistance = $pickupLocations
+            // Filter by geofence and add service availability
+            $locationsWithDistance = $locations
                 ->filter(function($location) use ($latitude, $longitude) {
                     $inGeofence = $location->isPointInGeofence($latitude, $longitude);
                     \Log::debug('Geofence check result', [
@@ -85,7 +89,9 @@ class StoreAddressController extends Controller
                     $distance = $location->distanceFrom($latitude, $longitude);
                     return [
                         'location' => $location,
-                        'distance' => $distance
+                        'distance' => $distance,
+                        'isPickupAvailable' => $location->is_pickup_location,
+                        'isDeliveryAvailable' => $location->is_delivery_location
                     ];
                 })
                 ->filter(function($item) {
@@ -95,9 +101,15 @@ class StoreAddressController extends Controller
                 ->take($limit)
                 ->values();
             
-            \Log::info('Found delivery locations', [
+            \Log::info('Found locations', [
                 'count' => count($locationsWithDistance),
-                'locations' => $locationsWithDistance->pluck('location.id')
+                'locations' => $locationsWithDistance->map(function($item) {
+                    return [
+                        'id' => $item['location']->id,
+                        'pickup' => $item['isPickupAvailable'],
+                        'delivery' => $item['isDeliveryAvailable']
+                    ];
+                })
             ]);
 
             return response()->json([
@@ -105,10 +117,10 @@ class StoreAddressController extends Controller
                 'data' => $locationsWithDistance
             ]);
         } catch (\Exception $e) {
-            \Log::error('Error finding nearest pickup locations: ' . $e->getMessage());
+            Log::error('Error finding nearest locations: ' . $e->getMessage());
             return response()->json([
                 'status' => 'error',
-                'message' => 'Failed to find nearest pickup locations'
+                'message' => 'Failed to find nearest locations'
             ], 500);
         }
     }

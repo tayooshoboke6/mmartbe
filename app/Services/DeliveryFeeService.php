@@ -74,13 +74,13 @@ class DeliveryFeeService
                 $isWithinDeliveryZone = $this->isPointInPolygon(
                     $customerLocation[0], 
                     $customerLocation[1], 
-                    json_decode($store->geofence_coordinates, true)
+                    $store->geofence_coordinates
                 );
                 
                 Log::info('DeliveryFeeService: Geofence check', [
                     'isWithinGeofence' => $isWithinDeliveryZone,
                     'customerLocation' => $customerLocation,
-                    'geofence' => json_decode($store->geofence_coordinates, true)
+                    'geofence' => $store->geofence_coordinates
                 ]);
                 
                 if (!$isWithinDeliveryZone) {

@@ -56,7 +56,9 @@ class StoreAddress extends Model
         'delivery_base_fee' => 'float',
         'delivery_fee_per_km' => 'float',
         'free_delivery_threshold' => 'float',
-        'delivery_radius_km' => 'integer'
+        'delivery_radius_km' => 'integer',
+        'geofence_coordinates' => 'json',
+        'opening_hours' => 'json'
     ];
 
     /**
@@ -117,13 +119,13 @@ class StoreAddress extends Model
      */
     public function isPointInGeofence($latitude, $longitude)
     {
-        if (!$this->geofence_coordinates || !$this->is_delivery_location) {
+        if (!$this->geofence_coordinates) {
             return false;
         }
 
         try {
-            $polygon = json_decode($this->geofence_coordinates, true);
-            if (!is_array($polygon) || empty($polygon)) {
+            $coordinates = $this->geofence_coordinates;
+            if (!is_array($coordinates) || empty($coordinates)) {
                 \Log::error('Invalid geofence coordinates for store ' . $this->id);
                 return false;
             }
@@ -131,10 +133,10 @@ class StoreAddress extends Model
             \Log::info('Checking point in geofence', [
                 'store_id' => $this->id,
                 'point' => [$latitude, $longitude],
-                'polygon' => $polygon
+                'polygon' => $coordinates
             ]);
 
-            return $this->pointInPolygon([$latitude, $longitude], $polygon);
+            return $this->pointInPolygon([$latitude, $longitude], $coordinates);
         } catch (\Exception $e) {
             \Log::error('Error checking geofence for store ' . $this->id . ': ' . $e->getMessage());
             return false;
