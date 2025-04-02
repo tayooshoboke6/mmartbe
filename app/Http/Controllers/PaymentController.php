@@ -30,6 +30,11 @@ class PaymentController extends Controller
                 'request_data' => $request->except(['card_number', 'cvv', 'expiry_month', 'expiry_year'])
             ]);
 
+            // Log the full request data
+            Log::info('Full payment request data', [
+                'request_data' => $request->all()
+            ]);
+
             // Validate request data
             $validator = Validator::make($request->all(), [
                 'payment_method' => 'required|string|in:card,bank_transfer,mobile_money',
@@ -123,31 +128,22 @@ class PaymentController extends Controller
                     ], 400);
                 }
 
-                // Ensure the amount is properly formatted as a number with 2 decimal places
-                $amount = number_format((float) $order->grand_total, 2, '.', '');
-
-                // Log the order details for debugging
-                Log::info('Order details', [
-                    'order_id' => $order->id,
-                    'grand_total' => $order->grand_total,
-                    'amount_for_payment' => $amount,
-                ]);
-
                 // Prepare payment data
                 $paymentData = [
                     'tx_ref' => $tx_ref,
-                    'amount' => (float) $amount,
-                    'currency' => $request->currency ?? 'NGN',
-                    'payment_options' => 'card',
+                    'amount' => (string) $order->grand_total,
+                    'currency' => 'NGN',
+                    'payment_options' => 'card, mobilemoney, ussd',
                     'redirect_url' => $request->redirect_url ?? env('FLUTTERWAVE_CALLBACK_URL', 'https://m-martplus.com/payments/callback'),
                     'customer' => [
-                        'email' => $request->email ?? 'customer@example.com',
-                        'phone_number' => $request->phone_number ?? '08012345678',
-                        'name' => $request->name ?? 'Customer'
+                        'email' => $request->email,
+                        'phonenumber' => $request->phone_number,
+                        'name' => $request->name
                     ],
-                    'meta' => $request->meta ?? [
+                    'meta' => [
                         'order_id' => $order->id,
-                        'user_id' => Auth::id() ?? $order->user_id
+                        'user_id' => Auth::id() ?? $order->user_id,
+                        'price' => (string) $order->grand_total
                     ],
                     'customizations' => [
                         'title' => 'M-Mart+ Order Payment',
@@ -156,14 +152,13 @@ class PaymentController extends Controller
                     ]
                 ];
 
-                // Log payment data (excluding sensitive information)
-                Log::info('Payment data prepared', [
-                    'tx_ref' => $tx_ref,
-                    'amount' => $amount,
-                    'currency' => $request->currency,
-                    'payment_method' => $request->payment_method,
-                    'order_id' => $order->id,
-                    'redirect_url' => $paymentData['redirect_url']
+                // Log the exact data being sent to Flutterwave
+                Log::info('Data being sent to Flutterwave', [
+                    'payload' => $paymentData,
+                    'headers' => [
+                        'Authorization' => 'Bearer ' . substr($secretKey, 0, 10) . '...',
+                        'Content-Type' => 'application/json'
+                    ]
                 ]);
 
                 // Initialize payment using Flutterwave API directly
@@ -173,7 +168,7 @@ class PaymentController extends Controller
                 Log::info('Sending request to Flutterwave API', [
                     'url' => 'https://api.flutterwave.com/v3/payments',
                     'tx_ref' => $tx_ref,
-                    'amount' => $amount,
+                    'amount' => $order->grand_total,
                     'has_secret_key' => !empty($secretKey)
                 ]);
 
@@ -190,19 +185,19 @@ class PaymentController extends Controller
                 $responseBody = $response->getBody()->getContents();
                 $responseData = json_decode($responseBody, true);
 
-                Log::info('Flutterwave API response', [
+                // Log the complete response from Flutterwave
+                Log::info('Complete Flutterwave response', [
                     'status_code' => $statusCode,
-                    'response_status' => $responseData['status'] ?? 'unknown',
-                    'response_message' => $responseData['message'] ?? 'No message',
-                    'has_data' => isset($responseData['data']),
-                    'has_link' => isset($responseData['data']['link'])
+                    'response_body' => $responseData,
+                    'headers' => $response->getHeaders()
                 ]);
 
                 // Check if the response contains the expected data
                 if ($statusCode !== 200 || !isset($responseData['data']['link'])) {
-                    Log::error('Flutterwave API error', [
+                    Log::error('Flutterwave payment initialization failed', [
                         'status_code' => $statusCode,
-                        'response' => $responseData
+                        'response' => $responseData,
+                        'request_data' => $paymentData
                     ]);
 
                     return response()->json([
@@ -214,12 +209,12 @@ class PaymentController extends Controller
                 // Create a new payment record
                 $payment = new Payment();
                 $payment->order_id = $order->id;
-                $payment->amount = $amount; // Use the validated amount variable
+                $payment->amount = $order->grand_total;
                 $payment->payment_method = $request->payment_method;
                 $payment->status = 'pending';
                 $payment->transaction_reference = $tx_ref;
                 $payment->payment_details = json_encode([
-                    'currency' => $request->currency,
+                    'currency' => 'NGN',
                     'customer_email' => $request->email,
                     'customer_name' => $request->name,
                     'customer_phone' => $request->phone_number

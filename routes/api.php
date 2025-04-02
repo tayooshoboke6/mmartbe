@@ -65,12 +65,13 @@ Route::post('/webhooks/flutterwave', [PaymentController::class, 'handleWebhook']
 Route::get('/pickup-locations', [App\Http\Controllers\StoreAddressController::class, 'getPublicPickupLocations']);
 Route::post('/pickup-locations/nearest', [App\Http\Controllers\StoreAddressController::class, 'findNearestPickupLocations']);
 
-// Payment callback routes (must be public)
+// Payment verification and callback routes (must be public)
+Route::get('/payments/verify/{transactionId}', [PaymentController::class, 'verifyTransaction']);
+Route::post('/payments/verify/{transactionId}', [PaymentController::class, 'verifyTransaction']);
 Route::get('/payments/callback', [PaymentController::class, 'handleCallback'])->name('payment.callback');
 Route::get('/payment/callback', [PaymentController::class, 'handleCallback'])->name('payment.callback.alt');
 Route::get('/payments/callback/{status}', [PaymentController::class, 'handleCallback'])->name('payment.callback.status');
 Route::get('/payment/callback/{status}', [PaymentController::class, 'handleCallback'])->name('payment.callback.alt.status');
-Route::get('/payments/verify/{transactionId}', [PaymentController::class, 'verifyTransaction']);
 
 // Products & Categories (Public)
 Route::get('/products', [ProductController::class, 'index']);
