@@ -11,16 +11,17 @@ class DeliveryFeeService
     /**
      * Calculate delivery fee based on distance, order subtotal, and store settings
      *
-     * @param float $subtotal Order subtotal
+     * @param float $orderSubtotal Order subtotal
      * @param array $customerLocation Customer's location [latitude, longitude]
      * @param int|null $storeId Store ID (optional)
+     * @param bool $ignoreMinOrder Whether to ignore minimum order check (optional)
      * @return array Delivery fee details
      */
-    public function calculateDeliveryFee(float $subtotal, array $customerLocation, ?int $storeId = null): array
+    public function calculateDeliveryFee(float $orderSubtotal, array $customerLocation, ?int $storeId = null, bool $ignoreMinOrder = true): array
     {
         try {
             Log::info('DeliveryFeeService: Starting calculation', [
-                'subtotal' => $subtotal,
+                'orderSubtotal' => $orderSubtotal,
                 'customerLocation' => $customerLocation,
                 'storeId' => $storeId
             ]);
@@ -108,8 +109,8 @@ class DeliveryFeeService
                 'delivery_fee_per_km' => $store->delivery_fee_per_km,
                 'free_delivery_threshold' => $store->free_delivery_threshold,
                 'minimum_order_value' => $store->minimum_order_value,
-                'subtotal' => $subtotal,
-                'is_free' => $subtotal >= $freeThreshold
+                'orderSubtotal' => $orderSubtotal,
+                'is_free' => $orderSubtotal >= $freeThreshold
             ]);
             
             Log::info('DeliveryFeeService: Delivery settings', [
@@ -117,13 +118,13 @@ class DeliveryFeeService
                 'feePerKm' => $feePerKm,
                 'freeThreshold' => $freeThreshold,
                 'minOrder' => $minOrder,
-                'subtotal' => $subtotal
+                'orderSubtotal' => $orderSubtotal
             ]);
             
             // Check if order meets minimum requirement
-            if ($subtotal < $minOrder) {
+            if (!$ignoreMinOrder && $orderSubtotal < $minOrder) {
                 Log::warning('DeliveryFeeService: Order below minimum', [
-                    'subtotal' => $subtotal,
+                    'orderSubtotal' => $orderSubtotal,
                     'minOrder' => $minOrder
                 ]);
                 return $this->getErrorResponse(
@@ -140,7 +141,7 @@ class DeliveryFeeService
             $fee += $distanceFee;
             
             // Free delivery for orders over threshold
-            if ($subtotal >= $freeThreshold) {
+            if ($orderSubtotal >= $freeThreshold) {
                 $fee = 0;
             }
             
@@ -152,7 +153,7 @@ class DeliveryFeeService
                 'distanceFee' => $distanceFee,
                 'totalFee' => $fee,
                 'estimatedTime' => $estimatedTime,
-                'isFreeDelivery' => $subtotal >= $freeThreshold
+                'isFreeDelivery' => $orderSubtotal >= $freeThreshold
             ]);
             
             // Prepare message based on fee
@@ -181,7 +182,7 @@ class DeliveryFeeService
                 'trace' => $e->getTraceAsString(),
                 'customer_location' => $customerLocation ?? null,
                 'store_id' => $storeId ?? null,
-                'subtotal' => $subtotal ?? null
+                'orderSubtotal' => $orderSubtotal ?? null
             ]);
             return $this->getErrorResponse("Unable to calculate delivery fee: " . $e->getMessage());
         }

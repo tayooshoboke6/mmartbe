@@ -52,7 +52,8 @@ class DeliveryFeeController extends Controller
         $result = $this->deliveryFeeService->calculateDeliveryFee(
             $request->subtotal,
             $customerLocation,
-            $request->store_id
+            $request->store_id,
+            true
         );
 
         return response()->json([
