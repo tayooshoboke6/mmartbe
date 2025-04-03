@@ -14,6 +14,13 @@ return [
     |
     */
 
+    'mailgun' => [
+        'domain' => env('MAILGUN_DOMAIN'),
+        'secret' => env('MAILGUN_SECRET'),
+        'endpoint' => env('MAILGUN_ENDPOINT', 'api.mailgun.net'),
+        'scheme' => 'https',
+    ],
+
     'postmark' => [
         'token' => env('POSTMARK_TOKEN'),
     ],
@@ -62,6 +69,12 @@ return [
         'key' => env('BREVO_API_KEY'),
         'api_key' => env('BREVO_API_KEY'),
         'api_secret' => env('BREVO_API_SECRET'),
+    ],
+
+    'termii' => [
+        'api_key' => env('TERMII_API_KEY'),
+        'api_url' => env('TERMII_API_URL', 'https://api.ng.termii.com/api'),
+        'sender_id' => env('TERMII_SENDER_ID', 'MMartPlus'),
     ],
 
 ];

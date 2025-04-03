@@ -132,7 +132,7 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Service Providers
+    | Autoloaded Service Providers
     |--------------------------------------------------------------------------
     |
     | The service providers listed here will be automatically loaded on the
@@ -169,10 +169,10 @@ return [
         // Application Service Providers...
         App\Providers\AppServiceProvider::class,
         App\Providers\AuthServiceProvider::class,
+        // App\Providers\BroadcastServiceProvider::class,
         App\Providers\EventServiceProvider::class,
         App\Providers\RouteServiceProvider::class,
-        App\Providers\FlutterwaveServiceProvider::class,
-        App\Providers\BrevoServiceProvider::class,
+        App\Providers\TermiiServiceProvider::class,
     ],
 
 ];
