@@ -12,6 +12,7 @@ use App\Mail\LowStockAlertMail;
 use App\Mail\NewsletterSubscriptionMail;
 use App\Mail\MarketingMail;
 use App\Services\TermiiService;
+use App\Services\OrderSmsService;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Log;
 
@@ -34,14 +35,29 @@ class NotificationService
                 return false;
             }
             
-            $user = $order->user;
-            if (!$user || !$user->email) {
-                Log::error('Cannot send order confirmation: User or email not found for order #' . $order->order_number);
+            // First try to use the customer_email from the order (provided during checkout)
+            $emailToUse = $order->customer_email;
+            
+            // If no customer_email is available, fall back to the user's email
+            if (empty($emailToUse)) {
+                $user = $order->user;
+                if ($user && $user->email) {
+                    $emailToUse = $user->email;
+                }
+            }
+            
+            // If we still don't have an email, log an error and return
+            if (empty($emailToUse)) {
+                Log::error('Cannot send order confirmation: No email found for order #' . $order->order_number);
                 return false;
             }
             
-            Mail::to($user->email)->send(new OrderConfirmationMail($order));
-            Log::info('Order confirmation email sent for order #' . $order->order_number);
+            Mail::to($emailToUse)->send(new OrderConfirmationMail($order));
+            Log::info('Order confirmation email sent to ' . $emailToUse . ' for order #' . $order->order_number);
+            
+            // Also send SMS notification
+            OrderSmsService::sendOrderConfirmation($order);
+            
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send order confirmation email: ' . $e->getMessage());
@@ -68,14 +84,29 @@ class NotificationService
                 return false;
             }
             
-            $user = $order->user;
-            if (!$user || !$user->email) {
-                Log::error('Cannot send status update: User or email not found for order #' . $order->order_number);
+            // First try to use the customer_email from the order (provided during checkout)
+            $emailToUse = $order->customer_email;
+            
+            // If no customer_email is available, fall back to the user's email
+            if (empty($emailToUse)) {
+                $user = $order->user;
+                if ($user && $user->email) {
+                    $emailToUse = $user->email;
+                }
+            }
+            
+            // If we still don't have an email, log an error and return
+            if (empty($emailToUse)) {
+                Log::error('Cannot send status update: No email found for order #' . $order->order_number);
                 return false;
             }
             
-            Mail::to($user->email)->send(new OrderStatusUpdateMail($order, $oldStatus, $newStatus));
-            Log::info("Order status update email sent for order #{$order->order_number}: {$oldStatus} -> {$newStatus}");
+            Mail::to($emailToUse)->send(new OrderStatusUpdateMail($order, $oldStatus, $newStatus));
+            Log::info("Order status update email sent to {$emailToUse} for order #{$order->order_number}: {$oldStatus} -> {$newStatus}");
+            
+            // Also send SMS notification
+            OrderSmsService::sendOrderStatusUpdate($order, $oldStatus, $newStatus);
+            
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send order status update email: ' . $e->getMessage());
@@ -185,32 +216,14 @@ class NotificationService
     public static function sendOrderConfirmationSms(Order $order)
     {
         try {
-            // Check if SMS notifications are enabled
-            $enabled = Setting::getValue('sms_notifications', 'false');
-            $orderSmsEnabled = Setting::getValue('order_confirmation_sms', 'false');
+            // Use our new OrderSmsService to send the SMS
+            $result = OrderSmsService::sendOrderConfirmation($order);
             
-            if ($enabled !== 'true' || $orderSmsEnabled !== 'true') {
-                Log::info('Order confirmation SMS are disabled in settings');
-                return false;
-            }
-            
-            $user = $order->user;
-            if (!$user || !$user->phone) {
-                Log::error('Cannot send order confirmation SMS: User or phone not found for order #' . $order->order_number);
-                return false;
-            }
-            
-            $message = "Your order #{$order->order_number} has been confirmed. Total: ₦" . 
-                       number_format($order->grand_total, 2) . ". Thank you for shopping with M-Mart+!";
-            
-            $termiiService = new TermiiService();
-            $result = $termiiService->sendSms($user->phone, $message);
-            
-            if ($result['success']) {
+            if ($result) {
                 Log::info('Order confirmation SMS sent for order #' . $order->order_number);
                 return true;
             } else {
-                Log::error('Failed to send order confirmation SMS: ' . $result['message']);
+                Log::error('Failed to send order confirmation SMS via OrderSmsService');
                 return false;
             }
         } catch (\Exception $e) {

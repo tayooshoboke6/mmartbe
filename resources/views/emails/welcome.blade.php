@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>M-Mart+ Test Email</title>
+  <title>M-Mart+ Welcome</title>
   <style>
     body {
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -100,47 +100,6 @@
       line-height: 1.5;
     }
 
-    .order-summary {
-      margin-top: 25px;
-      border-collapse: separate;
-      border-spacing: 0;
-      width: 100%;
-      border-radius: 10px;
-      overflow: hidden;
-      box-shadow: 0 4px 15px rgba(0,0,0,0.05);
-    }
-
-    .order-summary th, .order-summary td {
-      padding: 15px;
-      border-bottom: 1px solid #e0e0e0;
-      text-align: left;
-      word-break: break-word;
-      white-space: normal;
-    }
-
-    .order-summary th {
-      background-color: #173CB2;
-      color: white;
-      font-weight: 600;
-      font-size: 14px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    .order-summary tr:last-child td {
-      border-bottom: none;
-    }
-
-    .order-summary tr:nth-child(even) {
-      background-color: #f9f9f9;
-    }
-
-    .total-row td {
-      font-weight: bold;
-      background-color: #f0f7ff;
-      font-size: 16px;
-    }
-
     .footer {
       background: #173CB2;
       text-align: center;
@@ -167,7 +126,7 @@
       box-shadow: 0 6px 20px rgba(246,192,4,0.4);
     }
 
-    .address-box {
+    .feature-box {
       background: #f5f5f5;
       padding: 35px 40px;
       border-radius: 12px;
@@ -176,9 +135,49 @@
       border-top: 4px solid #173CB2;
     }
 
-    .address-box p {
+    .feature-box h3 {
+      color: #173CB2;
+      margin-top: 0;
+    }
+
+    .feature-box p {
       margin: 12px 0;
       line-height: 1.6;
+    }
+
+    .feature-grid {
+      width: 100%;
+      margin: 30px 0;
+      overflow: hidden;
+    }
+
+    .feature-item {
+      width: 45%;
+      float: left;
+      margin-right: 5%;
+      margin-bottom: 20px;
+      background: #fff;
+      border-radius: 10px;
+      padding: 20px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+      border-left: 3px solid #F6C004;
+      box-sizing: border-box;
+    }
+    
+    .feature-item:nth-child(2n) {
+      margin-right: 0;
+    }
+
+    .feature-item h4 {
+      color: #173CB2;
+      margin-top: 0;
+      font-size: 16px;
+    }
+
+    .feature-item p {
+      margin: 10px 0 0;
+      font-size: 14px;
+      line-height: 1.5;
     }
 
     .section-title {
@@ -209,14 +208,15 @@
         padding: 30px 25px;
       }
 
-      .status-box, .address-box {
+      .status-box, .feature-box {
         padding: 25px;
         margin: 25px 0;
       }
 
-      .order-summary th, .order-summary td {
-        padding: 10px;
-        font-size: 14px;
+      .feature-item {
+        width: 100%;
+        float: none;
+        margin-right: 0;
       }
 
       .header-title {
@@ -232,34 +232,57 @@
       <div class="logo-container">
         <img src="{{ asset('images/logo-icon.png') }}" alt="M-Mart+ Logo">
       </div>
-      <h1 class="header-title">Test Email</h1>
-      <p class="header-subtitle">This is a test email from M-Mart+</p>
+      <h1 class="header-title">Welcome to M-Mart+</h1>
+      <p class="header-subtitle">Your account has been created successfully!</p>
     </div>
 
     <div class="content">
-      <h2>Hello {{ $user->name ?? 'Customer' }},</h2>
+      <h2>Hello {{ $user->name }},</h2>
 
-      <p>This is a test email from M-Mart+ to verify that our email system is working correctly.</p>
+      <p>Thank you for joining M-Mart+! We're excited to have you as part of our community. Your account has been successfully created and you can now enjoy all the benefits of shopping with us.</p>
 
       <div class="status-box">
-        <p><strong>Test Email ID:</strong> TEST-{{ rand(10000, 99999) }}</p>
-        <p><strong>Sent Date:</strong> {{ now()->format('d/m/Y H:i') }}</p>
-        <p><strong>Status:</strong> Delivered</p>
+        <p><strong>Account Email:</strong> {{ $user->email }}</p>
+        <p><strong>Account Created:</strong> {{ $user->created_at->format('d/m/Y H:i') }}</p>
+        <p><strong>Account Status:</strong> Active</p>
       </div>
 
-      <h3 class="section-title"><span>📧</span> Email Information</h3>
-      <div class="address-box">
-        <p><strong>Recipient:</strong> {{ $email }}</p>
-        <p><strong>Sender:</strong> {{ config('mail.from.address') }}</p>
-        <p><strong>Subject:</strong> M-Mart+ Test Email</p>
+      <h3 class="section-title"><span>✨</span> What You Can Do Now</h3>
+      
+      <div class="feature-grid">
+        <div class="feature-item">
+          <h4>Browse Products</h4>
+          <p>Explore our wide range of products at competitive prices.</p>
+        </div>
+        <div class="feature-item">
+          <h4>Save Favorites</h4>
+          <p>Add items to your wishlist to save them for later.</p>
+        </div>
+        <div class="feature-item">
+          <h4>Track Orders</h4>
+          <p>Follow your orders from purchase to delivery.</p>
+        </div>
+        <div class="feature-item">
+          <h4>Get Exclusive Deals</h4>
+          <p>Access special promotions and discounts for members.</p>
+        </div>
       </div>
 
-      <p>If you've received this email, it means our email system is working properly. You can safely ignore this message.</p>
+      <h3 class="section-title"><span>🔒</span> Account Security</h3>
+      <p>We take your security seriously. Here are some tips to keep your account safe:</p>
+      <ul>
+        <li>Use a strong, unique password</li>
+        <li>Never share your login credentials</li>
+        <li>Log out when using shared devices</li>
+        <li>Update your contact information regularly</li>
+      </ul>
 
-      <p style="color: #173CB2; font-weight: bold; font-size: 18px; margin-top: 30px; margin-bottom: 30px;">Thank you for using M-Mart+!</p>
+      <p>If you have any questions or need assistance, our customer support team is always ready to help you.</p>
+
+      <p style="color: #173CB2; font-weight: bold; font-size: 18px; margin-top: 30px; margin-bottom: 30px;">Thank you for choosing M-Mart+!</p>
 
       <div style="text-align: center; margin: 40px 0;">
-        <a href="#" class="btn">Visit Our Website</a>
+        <a href="{{ url('/') }}" class="btn">Start Shopping</a>
       </div>
     </div>
 

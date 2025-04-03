@@ -19,6 +19,7 @@
         "nyholm/psr7": "^1.8",
         "psr/simple-cache": "2.0",
         "sendinblue/api-v3-sdk": "^8.4",
+        "symfony/brevo-mailer": "^7.2",
         "symfony/http-client": "^7.2",
         "symfony/mailgun-mailer": "^7.2"
     },

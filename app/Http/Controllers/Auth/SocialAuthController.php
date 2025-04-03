@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Firebase\JWT\JWT;
 use Firebase\JWT\JWK;
 use GuzzleHttp\Client;
@@ -118,6 +119,19 @@ class SocialAuthController extends Controller
                         'user_id' => $user->id,
                         'email' => $user->email
                     ]);
+                    
+                    // Send welcome email to the new user
+                    try {
+                        Mail::to($user->email)->send(new \App\Mail\WelcomeMail($user));
+                        Log::info('Welcome email sent to Google auth user', ['user_id' => $user->id, 'email' => $user->email]);
+                    } catch (\Exception $e) {
+                        Log::error('Failed to send welcome email to Google auth user', [
+                            'user_id' => $user->id,
+                            'email' => $user->email,
+                            'error' => $e->getMessage()
+                        ]);
+                        // Continue with registration even if email fails
+                    }
                 } else {
                     // Update existing user
                     $user->update([

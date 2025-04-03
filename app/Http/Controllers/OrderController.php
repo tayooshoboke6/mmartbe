@@ -240,49 +240,40 @@ class OrderController extends Controller
             // Clear cart
             $user->cartItems()->delete();
             
-            // Send order confirmation email for cash on delivery orders
+            // Send order confirmation email for all orders
             $emailSent = false;
-            if ($request->payment_method === 'cash_on_delivery') {
-                try {
-                    // Use the customer's email from the checkout form if provided, otherwise use the user's email
-                    $customerEmail = $request->customer_email ?? $user->email;
-                    
-                    \Log::info('Sending order confirmation email for cash on delivery order', [
+            try {
+                // Use the customer's email from the checkout form if provided, otherwise use the user's email
+                $customerEmail = $request->customer_email ?? $user->email;
+                
+                \Log::info('Sending order confirmation email', [
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'user_email' => $user->email,
+                    'customer_email' => $customerEmail
+                ]);
+                
+                // Use NotificationService instead of direct Mail call
+                $emailSent = NotificationService::sendOrderConfirmation($order);
+                
+                if ($emailSent) {
+                    \Log::info('Order confirmation email sent successfully', [
                         'order_id' => $order->id,
-                        'order_number' => $order->order_number,
-                        'user_email' => $user->email,
                         'customer_email' => $customerEmail
                     ]);
-                    
-                    // Use NotificationService instead of direct Mail call
-                    $emailSent = NotificationService::sendOrderConfirmation($order);
-                    
-                    if ($emailSent) {
-                        \Log::info('Order confirmation email sent successfully', [
-                            'order_id' => $order->id,
-                            'customer_email' => $customerEmail
-                        ]);
-                    }
-                    
-                    // Send SMS notification as well
-                    $smsSent = NotificationService::sendOrderConfirmationSms($order);
-                    
-                    if ($smsSent) {
-                        \Log::info('Order confirmation SMS sent successfully', [
-                            'order_id' => $order->id,
-                            'customer_phone' => $order->user->phone ?? 'N/A'
-                        ]);
-                    }
-                    
-                } catch (\Exception $e) {
-                    \Log::error('Failed to send order confirmation email', [
-                        'order_id' => $order->id,
-                        'error' => $e->getMessage(),
-                        'trace' => $e->getTraceAsString()
-                    ]);
-                    
-                    $emailSent = false;
                 }
+                
+                // SMS notification is now handled inside NotificationService::sendOrderConfirmation
+                // No need for a separate SMS call here
+                
+            } catch (\Exception $e) {
+                \Log::error('Failed to send order confirmation email', [
+                    'order_id' => $order->id,
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString()
+                ]);
+                
+                $emailSent = false;
             }
             
             DB::commit();

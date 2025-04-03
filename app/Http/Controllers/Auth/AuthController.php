@@ -8,6 +8,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Auth\Events\PasswordReset;
@@ -74,6 +75,19 @@ class AuthController extends Controller
                 'phone' => $request->phone,
                 'role' => 'customer', // Default role
             ]);
+
+            // Send welcome email to the new user
+            try {
+                Mail::to($user->email)->send(new \App\Mail\WelcomeMail($user));
+                Log::info('Welcome email sent', ['user_id' => $user->id, 'email' => $user->email]);
+            } catch (\Exception $e) {
+                Log::error('Failed to send welcome email', [
+                    'user_id' => $user->id,
+                    'email' => $user->email,
+                    'error' => $e->getMessage()
+                ]);
+                // Continue with registration even if email fails
+            }
 
             $token = $user->createToken('auth_token')->plainTextToken;
 
