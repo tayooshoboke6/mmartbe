@@ -13,6 +13,8 @@ use Firebase\JWT\JWT;
 use Firebase\JWT\JWK;
 use GuzzleHttp\Client;
 use Google\Exception;
+use phpseclib3\Crypt\RSA;
+use phpseclib3\Math\BigInteger;
 
 class SocialAuthController extends Controller
 {
@@ -25,7 +27,7 @@ class SocialAuthController extends Controller
     public function googleAuth(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'id_token' => 'required|string',
+            'token' => 'required|string',
         ]);
 
         if ($validator->fails()) {
@@ -35,7 +37,7 @@ class SocialAuthController extends Controller
         try {
             // Log the token for debugging
             Log::info('Google auth attempt with token', [
-                'token_length' => strlen($request->id_token),
+                'token_length' => strlen($request->token),
                 'client_id' => config('services.google.client_id')
             ]);
 
@@ -50,16 +52,16 @@ class SocialAuthController extends Controller
             
             try {
                 try {
-                    $payload = $client->verifyIdToken($request->id_token);
+                    $payload = $client->verifyIdToken($request->token);
                     
                     Log::info('Token verification attempt', [
-                        'token_length' => strlen($request->id_token),
+                        'token_length' => strlen($request->token),
                         'client_id' => $client->getClientId()
                     ]);
                     
                     if (!$payload) {
                         Log::error('Invalid Google token - null payload', [
-                            'token_prefix' => substr($request->id_token, 0, 20) . '...',
+                            'token_prefix' => substr($request->token, 0, 20) . '...',
                             'client_id' => $client->getClientId()
                         ]);
                         return response()->json(['message' => 'Invalid Google token - verification failed'], 401);
@@ -67,7 +69,7 @@ class SocialAuthController extends Controller
                 } catch (Exception $e) {
                     Log::error('Google token verification exception', [
                         'error' => $e->getMessage(),
-                        'token_prefix' => substr($request->id_token, 0, 20) . '...',
+                        'token_prefix' => substr($request->token, 0, 20) . '...',
                         'client_id' => $client->getClientId()
                     ]);
                     return response()->json(['message' => 'Google token verification error: ' . $e->getMessage()], 401);
@@ -79,7 +81,7 @@ class SocialAuthController extends Controller
                 
                 if (!$payload) {
                     Log::error('Invalid Google token', [
-                        'token' => $request->id_token,
+                        'token' => $request->token,
                         'error' => 'Invalid token'
                     ]);
                     return response()->json(['message' => 'Invalid Google token'], 401);
@@ -268,7 +270,7 @@ class SocialAuthController extends Controller
             if (!$user) {
                 // Create new user
                 $user = User::create([
-                    'name' => $name ?? 'Apple User',
+                    'name' => $name && !empty($name) ? $name : 'Apple User',
                     'email' => $email ?? $appleUserId . '@privaterelay.appleid.com',
                     'apple_id' => $appleUserId,
                     'password' => Hash::make(Str::random(16)),
@@ -278,7 +280,8 @@ class SocialAuthController extends Controller
                 // Update existing user
                 $user->update([
                     'apple_id' => $appleUserId,
-                    'name' => $name ?? $user->name,
+                    // Only update name if provided and not empty
+                    'name' => ($name && !empty($name)) ? $name : $user->name,
                 ]);
             }
 
@@ -309,34 +312,57 @@ class SocialAuthController extends Controller
             // Fetch Apple's public keys
             $client = new Client();
             $response = $client->get('https://appleid.apple.com/auth/keys');
-            $keys = json_decode($response->getBody(), true);
+            $keysJson = json_decode($response->getBody(), true);
             
-            // Parse the JWT without verification to get the key ID (kid)
+            if (!isset($keysJson['keys']) || empty($keysJson['keys'])) {
+                Log::error('Failed to fetch Apple public keys');
+                return null;
+            }
+            
+            // Parse the JWT header to get the key ID (kid)
             $tokenParts = explode('.', $identityToken);
             if (count($tokenParts) !== 3) {
+                Log::error('Invalid token format - not a JWT');
                 return null;
             }
             
-            $header = json_decode(base64_decode(str_replace(['-', '_'], ['+', '/'], $tokenParts[0])), true);
-            $kid = $header['kid'] ?? null;
+            $headerJson = base64_decode(strtr($tokenParts[0], '-_', '+/'));
+            $header = json_decode($headerJson, true);
             
-            if (!$kid) {
+            if (!isset($header['kid'])) {
+                Log::error('No kid in token header');
                 return null;
             }
+            
+            $kid = $header['kid'];
             
             // Find the matching key
-            $jwks = JWK::parseKeySet($keys);
+            $publicKey = null;
+            foreach ($keysJson['keys'] as $key) {
+                if ($key['kid'] === $kid) {
+                    // For Firebase JWT v6.x, we need to use a specific key
+                    $publicKey = JWK::parseKey($key);
+                    break;
+                }
+            }
             
-            // Verify and decode the token
-            $payload = JWT::decode($identityToken, $jwks, ['RS256']);
+            if (!$publicKey) {
+                Log::error('No matching key found for kid: ' . $kid);
+                return null;
+            }
+            
+            // For Firebase JWT v6.x, we pass the key directly
+            $payload = JWT::decode($identityToken, $publicKey);
             
             // Validate token claims
             if ($payload->iss !== 'https://appleid.apple.com' || 
                 $payload->aud !== config('services.apple.client_id') ||
                 $payload->exp < time()) {
-                Log::error('Invalid Apple token claims', [
-                    'token' => $identityToken,
-                    'error' => 'Invalid claims'
+                Log::error('Invalid token claims', [
+                    'iss' => $payload->iss,
+                    'aud' => $payload->aud,
+                    'exp' => $payload->exp,
+                    'expected_aud' => config('services.apple.client_id')
                 ]);
                 return null;
             }
@@ -346,5 +372,64 @@ class SocialAuthController extends Controller
             Log::error('Apple token verification failed: ' . $e->getMessage());
             return null;
         }
+    }
+    
+    /**
+     * Convert a JWK (JSON Web Key) to PEM format
+     *
+     * @param array $jwk
+     * @return string|null
+     */
+    private function jwkToPem(array $jwk)
+    {
+        if (!isset($jwk['kty']) || $jwk['kty'] !== 'RSA') {
+            Log::error('Invalid JWK: not an RSA key');
+            return null;
+        }
+        
+        // Ensure all required components are present
+        $components = ['n', 'e'];
+        foreach ($components as $component) {
+            if (!isset($jwk[$component])) {
+                Log::error('Invalid JWK: missing component ' . $component);
+                return null;
+            }
+        }
+        
+        // Base64 URL decode the components
+        $n = base64_decode(strtr($jwk['n'], '-_', '+/'));
+        $e = base64_decode(strtr($jwk['e'], '-_', '+/'));
+        
+        if (!$n || !$e) {
+            Log::error('Failed to decode JWK components');
+            return null;
+        }
+        
+        // Convert the modulus and exponent to hexadecimal
+        $modulus = $this->urlsafeB64ToHex($jwk['n']);
+        $exponent = $this->urlsafeB64ToHex($jwk['e']);
+        
+        // Create RSA key using phpseclib
+        $rsa = new RSA();
+        $rsa->loadParameters(['n' => new BigInteger($modulus, 16), 'e' => new BigInteger($exponent, 16)]);
+        $rsa = $rsa->getPublicKey();
+        
+        return $rsa;
+    }
+    
+    /**
+     * Convert URL safe base64 to hexadecimal
+     *
+     * @param string $b64
+     * @return string
+     */
+    private function urlsafeB64ToHex($b64)
+    {
+        $bin = base64_decode(strtr($b64, '-_', '+/'));
+        $hex = '';
+        for ($i = 0; $i < strlen($bin); $i++) {
+            $hex .= sprintf('%02x', ord($bin[$i]));
+        }
+        return $hex;
     }
 }
