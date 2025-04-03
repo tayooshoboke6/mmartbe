@@ -41,19 +41,24 @@ use App\Http\Controllers\TaxSettingsController;
 
 // Public routes
 Route::post('/register', [AuthController::class, 'register']);
+Route::post('/register-initial', [AuthController::class, 'registerInitial']);
+Route::post('/send-verification-code', [AuthController::class, 'sendVerificationCode']);
+Route::post('/direct-verification-code', [\App\Http\Controllers\Auth\DirectSmsController::class, 'sendVerificationCode']);
+Route::post('/verify-phone', [AuthController::class, 'verifyPhone']);
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/auth/google', [SocialAuthController::class, 'googleAuth']);
 Route::post('/auth/apple', [SocialAuthController::class, 'appleAuth']);
 Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
 Route::post('/reset-password', [AuthController::class, 'resetPassword']);
+Route::post('/update-phone', [AuthController::class, 'updatePhone']);
 
 // Settings routes
-Route::get('/settings/bank-transfer', [\App\Http\Controllers\SettingsController::class, 'getBankTransferSettings']);
+Route::get('/settings/bank-transfer', [App\Http\Controllers\SettingsController::class, 'getBankTransferSettings']);
 
 // Payment routes
-Route::post('/payments/paystack/initialize', [\App\Http\Controllers\PaystackController::class, 'initializePayment']);
-Route::post('/payments/paystack/verify', [\App\Http\Controllers\PaystackController::class, 'verifyPayment']);
-Route::post('/payments/paystack/webhook', [\App\Http\Controllers\PaystackController::class, 'handleWebhook']);
+Route::post('/payments/paystack/initialize', [App\Http\Controllers\PaystackController::class, 'initializePayment']);
+Route::post('/payments/paystack/verify', [App\Http\Controllers\PaystackController::class, 'verifyPayment']);
+Route::post('/payments/paystack/webhook', [App\Http\Controllers\PaystackController::class, 'handleWebhook']);
 
 // Test endpoint for social auth
 Route::post('/auth/google/test', [SocialAuthController::class, 'testGoogleAuth']);
@@ -267,9 +272,9 @@ Route::middleware(['auth:sanctum'])->prefix('admin')->group(function () {
     });
     
     // Settings Management
-    Route::get('/settings', [\App\Http\Controllers\Admin\SettingsController::class, 'index']);
-    Route::put('/settings', [\App\Http\Controllers\Admin\SettingsController::class, 'update']);
-    Route::get('/settings/{key}', [\App\Http\Controllers\Admin\SettingsController::class, 'show']);
+    Route::get('/settings', [App\Http\Controllers\Admin\SettingsController::class, 'index']);
+    Route::put('/settings', [App\Http\Controllers\Admin\SettingsController::class, 'update']);
+    Route::get('/settings/{key}', [App\Http\Controllers\Admin\SettingsController::class, 'show']);
     
     // Delivery Settings
     Route::get('/delivery-settings/global', [App\Http\Controllers\Admin\DeliverySettingsController::class, 'getGlobalSettings']);
@@ -316,10 +321,10 @@ Route::middleware(['auth:sanctum'])->prefix('admin')->group(function () {
     Route::get('/products/import/template', [ProductController::class, 'downloadImportTemplate']);
     
     // Category Management
-    Route::get('/categories/stock-data', [\App\Http\Controllers\Admin\CategoryAdminController::class, 'getCategoryStockData']);
-    Route::apiResource('/categories', \App\Http\Controllers\Admin\CategoryAdminController::class);
-    Route::get('/categories-tree', [\App\Http\Controllers\Admin\CategoryAdminController::class, 'tree']);
-    Route::post('/categories-reorder', [\App\Http\Controllers\Admin\CategoryAdminController::class, 'reorder']);
+    Route::get('/categories/stock-data', [CategoryAdminController::class, 'getCategoryStockData']);
+    Route::apiResource('/categories', CategoryAdminController::class);
+    Route::get('/categories-tree', [CategoryAdminController::class, 'tree']);
+    Route::post('/categories-reorder', [CategoryAdminController::class, 'reorder']);
     
     // Admin Order Management
     Route::prefix('orders')->group(function () {
@@ -338,13 +343,13 @@ Route::middleware(['auth:sanctum'])->prefix('admin')->group(function () {
     Route::patch('/coupons/{coupon}/toggle-status', [CouponController::class, 'toggleStatus']);
     
     // Product Section Management
-    Route::get('/product-sections', [\App\Http\Controllers\Admin\ProductSectionController::class, 'index']);
-    Route::post('/product-sections', [\App\Http\Controllers\Admin\ProductSectionController::class, 'store']);
-    Route::get('/product-sections/{id}', [\App\Http\Controllers\Admin\ProductSectionController::class, 'show']);
-    Route::put('/product-sections/{id}', [\App\Http\Controllers\Admin\ProductSectionController::class, 'update']);
-    Route::delete('/product-sections/{id}', [\App\Http\Controllers\Admin\ProductSectionController::class, 'destroy']);
-    Route::patch('/product-sections/{id}/toggle', [\App\Http\Controllers\Admin\ProductSectionController::class, 'toggle']);
-    Route::post('/product-sections/reorder', [\App\Http\Controllers\Admin\ProductSectionController::class, 'reorder']);
+    Route::get('/product-sections', [ProductSectionController::class, 'index']);
+    Route::post('/product-sections', [ProductSectionController::class, 'store']);
+    Route::get('/product-sections/{id}', [ProductSectionController::class, 'show']);
+    Route::put('/product-sections/{id}', [ProductSectionController::class, 'update']);
+    Route::delete('/product-sections/{id}', [ProductSectionController::class, 'destroy']);
+    Route::patch('/product-sections/{id}/toggle', [ProductSectionController::class, 'toggle']);
+    Route::post('/product-sections/reorder', [ProductSectionController::class, 'reorder']);
     
     // Location Management
     Route::get('/locations', [LocationController::class, 'index']);
@@ -380,12 +385,12 @@ Route::middleware(['auth:sanctum'])->prefix('admin')->group(function () {
     });
     
     // User Management
-    Route::get('/users', [\App\Http\Controllers\Admin\UserController::class, 'index']);
-    Route::post('/users', [\App\Http\Controllers\Admin\UserController::class, 'store']);
-    Route::get('/users/{id}', [\App\Http\Controllers\Admin\UserController::class, 'show']);
-    Route::put('/users/{id}', [\App\Http\Controllers\Admin\UserController::class, 'update']);
-    Route::delete('/users/{id}', [\App\Http\Controllers\Admin\UserController::class, 'destroy']);
-    Route::put('/users/{id}/status', [\App\Http\Controllers\Admin\UserController::class, 'updateStatus']);
+    Route::get('/users', [UserController::class, 'index']);
+    Route::post('/users', [UserController::class, 'store']);
+    Route::get('/users/{id}', [UserController::class, 'show']);
+    Route::put('/users/{id}', [UserController::class, 'update']);
+    Route::delete('/users/{id}', [UserController::class, 'destroy']);
+    Route::put('/users/{id}/status', [UserController::class, 'updateStatus']);
 });
 
 // Debug route (temporary)

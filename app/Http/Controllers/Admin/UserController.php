@@ -8,6 +8,7 @@ use App\Models\Order;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 
@@ -202,6 +203,22 @@ class UserController extends Controller
                 'zip_code' => $request->zip_code,
                 'is_active' => true,
             ]);
+            
+            // Send welcome email to the new user
+            // Only send for customer accounts (not for admin staff)
+            if ($request->role === 'customer') {
+                try {
+                    Mail::to($user->email)->send(new \App\Mail\WelcomeMail($user));
+                    Log::info('Welcome email sent to admin-created user', ['user_id' => $user->id, 'email' => $user->email]);
+                } catch (\Exception $e) {
+                    Log::error('Failed to send welcome email to admin-created user', [
+                        'user_id' => $user->id,
+                        'email' => $user->email,
+                        'error' => $e->getMessage()
+                    ]);
+                    // Continue even if email fails
+                }
+            }
             
             return response()->json([
                 'status' => 'success',
