@@ -461,3 +461,4 @@ Route::get('/debug/delivery-fee', function (Request $request) {
 
 // Delivery fee debug route
 Route::get('/delivery-fee/debug', [DeliveryFeeController::class, 'debugCalculateDeliveryFee']);
+Route::get('/delivery-fee/debug', [DeliveryFeeController::class, 'debugCalculateDeliveryFee']);

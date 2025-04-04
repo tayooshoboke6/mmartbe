@@ -261,7 +261,7 @@
       <p class="header-subtitle">Your order status has changed</p>
     </div>
 
-    <div class="content">
+    <div class="content" style="margin-top: 25px;">
       <h2>Hello {{ $user->name ?? 'Customer' }},</h2>
 
       <p>We're writing to inform you that the status of your order has been updated.</p>
@@ -293,47 +293,47 @@
       <table class="order-summary">
         <thead>
           <tr>
-            <th>Item</th>
-            <th>Qty</th>
-            <th>Price</th>
-            <th>Total</th>
+            <th style="width: 45%;">Item</th>
+            <th style="width: 10%;">Qty</th>
+            <th style="width: 20%;">Price</th>
+            <th style="width: 25%;">Total</th>
           </tr>
         </thead>
         <tbody>
           @foreach($orderItems as $item)
             <tr>
-              <td>{{ $item->product_name }}</td>
+              <td style="max-width: 200px; overflow-wrap: break-word; word-wrap: break-word;">{{ $item->product_name }}</td>
               <td>{{ $item->quantity }}</td>
-              <td>₦{{ number_format($item->unit_price, 2) }}</td>
-              <td>₦{{ number_format($item->subtotal, 2) }}</td>
+              <td style="white-space: nowrap;"><nobr>₦{{ number_format($item->unit_price, 2) }}</nobr></td>
+              <td style="white-space: nowrap;"><nobr>₦{{ number_format($item->subtotal, 2) }}</nobr></td>
             </tr>
           @endforeach
 
           <tr>
             <td colspan="3">Subtotal</td>
-            <td>₦{{ number_format($order->subtotal, 2) }}</td>
+            <td style="white-space: nowrap;"><nobr>₦{{ number_format($order->subtotal, 2) }}</nobr></td>
           </tr>
 
           @if($order->discount > 0)
           <tr>
             <td colspan="3">Discount</td>
-            <td>-₦{{ number_format($order->discount, 2) }}</td>
+            <td style="white-space: nowrap;"><nobr>-₦{{ number_format($order->discount, 2) }}</nobr></td>
           </tr>
           @endif
 
           <tr>
             <td colspan="3">Shipping</td>
-            <td>₦{{ number_format($order->shipping_fee, 2) }}</td>
+            <td style="white-space: nowrap;"><nobr>₦{{ number_format($order->shipping_fee, 2) }}</nobr></td>
           </tr>
 
           <tr>
             <td colspan="3">Tax</td>
-            <td>₦{{ number_format($order->tax, 2) }}</td>
+            <td style="white-space: nowrap;"><nobr>₦{{ number_format($order->tax, 2) }}</nobr></td>
           </tr>
 
           <tr class="total-row">
             <td colspan="3">Total</td>
-            <td>₦{{ number_format($order->grand_total, 2) }}</td>
+            <td style="white-space: nowrap;"><nobr>₦{{ number_format($order->grand_total, 2) }}</nobr></td>
           </tr>
         </tbody>
       </table>
@@ -347,9 +347,19 @@
       </div>
     </div>
 
-    <div class="footer">
-      &copy; {{ date('Y') }} M-Mart+. All rights reserved.
-    </div>
+    <table width="100%" border="0" cellpadding="0" cellspacing="0" bgcolor="#173CB2" style="background-color: #173CB2;">
+      <tr>
+        <td align="center" style="padding: 25px 0;">
+          <table width="250" border="0" cellpadding="0" cellspacing="0">
+            <tr>
+              <td align="center" style="text-align:center; font-size: 14px; color: rgba(255,255,255,0.8);">
+                &copy; {{ date('Y') }} M-Mart+. All rights reserved.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
   </div>
 
 </body>

@@ -37,7 +37,7 @@ class PaymentController extends Controller
 
             // Validate request data
             $validator = Validator::make($request->all(), [
-                'payment_method' => 'required|string|in:card,bank_transfer,mobile_money',
+                'payment_method' => 'required|string|in:bank_transfer,paystack,flutterwave,cash_on_delivery',
                 'currency' => 'required|string|size:3',
                 'country' => 'required|string|size:2',
                 'email' => 'required|email',
@@ -848,37 +848,45 @@ class PaymentController extends Controller
     public function getPaymentMethods()
     {
         try {
+            // Get settings from database
+            $settings = \App\Models\Setting::all()->pluck('value', 'key');
+            
             // Define available payment methods
             $paymentMethods = [
                 [
-                    'id' => 'card',
-                    'name' => 'Card Payment',
-                    'description' => 'Pay with debit or credit card',
-                    'icon' => 'credit-card',
-                    'enabled' => true
-                ],
-                [
                     'id' => 'bank_transfer',
-                    'name' => 'Bank Transfer',
+                    'name' => 'Manual Bank Transfer',
                     'description' => 'Pay via bank transfer',
                     'icon' => 'bank',
-                    'enabled' => true
+                    'enabled' => isset($settings['payment_bank_transfer']) ? $settings['payment_bank_transfer'] === 'true' : true
                 ],
                 [
-                    'id' => 'mobile_money',
-                    'name' => 'Mobile Money',
-                    'description' => 'Pay with mobile money',
-                    'icon' => 'mobile',
-                    'enabled' => true
+                    'id' => 'paystack',
+                    'name' => 'Pay with Paystack',
+                    'description' => 'Pay with Paystack',
+                    'icon' => 'credit-card',
+                    'enabled' => isset($settings['payment_paystack']) ? $settings['payment_paystack'] === 'true' : true
+                ],
+                [
+                    'id' => 'flutterwave',
+                    'name' => 'Pay with Flutterwave',
+                    'description' => 'Pay with Flutterwave',
+                    'icon' => 'credit-card',
+                    'enabled' => isset($settings['payment_flutterwave']) ? $settings['payment_flutterwave'] === 'true' : true
                 ],
                 [
                     'id' => 'cash_on_delivery',
                     'name' => 'Cash on Delivery',
                     'description' => 'Pay when your order is delivered',
                     'icon' => 'money-bill',
-                    'enabled' => true
+                    'enabled' => isset($settings['payment_cash_on_delivery']) ? $settings['payment_cash_on_delivery'] === 'true' : true
                 ]
             ];
+            
+            // Filter out disabled payment methods
+            $paymentMethods = array_filter($paymentMethods, function($method) {
+                return $method['enabled'];
+            });
 
             return response()->json([
                 'status' => 'success',
