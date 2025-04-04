@@ -34,41 +34,59 @@ class SocialAuthController extends Controller
                 'token_preview' => substr($token, 0, 20) . '...'
             ]);
             
-            // For Firebase tokens, we can simply decode the JWT to extract the payload
-            // This is a simplified approach for development purposes
-            $tokenParts = explode('.', $token);
-            if (count($tokenParts) !== 3) {
-                Log::error('Invalid token format - not a valid JWT');
-                return null;
-            }
-            
-            // Decode the payload part (second part of the JWT)
-            $payload = json_decode($this->base64UrlDecode($tokenParts[1]), true);
-            if (!$payload) {
-                Log::error('Failed to decode token payload');
-                return null;
-            }
-            
-            // Basic validation of the token payload
-            if (!isset($payload['sub']) || empty($payload['sub'])) {
-                Log::error('Invalid token - missing subject (sub)');
-                return null;
-            }
-            
-            if (!isset($payload['email']) || empty($payload['email'])) {
-                Log::error('Invalid token - missing email');
-                return null;
-            }
-            
-            // Log successful verification
-            Log::info('Firebase token payload successfully extracted', [
-                'sub' => $payload['sub'],
-                'email' => $payload['email']
+            // First try the Google token info endpoint
+            $client = new Client();
+            $response = $client->request('GET', 'https://www.googleapis.com/oauth2/v3/tokeninfo', [
+                'query' => ['id_token' => $token]
             ]);
             
+            if ($response->getStatusCode() == 200) {
+                $payload = json_decode($response->getBody(), true);
+                Log::info('Firebase token verified via Google tokeninfo endpoint');
+                return $payload;
+            }
+        } catch (\Exception $e) {
+            Log::warning('Firebase token verification via tokeninfo failed', [
+                'error' => $e->getMessage()
+            ]);
+        }
+        
+        // If the first method fails, try the Firebase Auth API
+        try {
+            // For Firebase tokens, we can also try to decode and verify the JWT directly
+            // Get Google's public keys
+            $client = new Client();
+            $response = $client->request('GET', 'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com');
+            $keys = json_decode($response->getBody(), true);
+            
+            // Convert keys to JWK format
+            $jwks = [];
+            foreach ($keys as $kid => $cert) {
+                $jwks[$kid] = $this->convertCertToJwk($cert);
+            }
+            
+            // Decode the token header to get the key ID (kid)
+            $tokenParts = explode('.', $token);
+            if (count($tokenParts) !== 3) {
+                throw new \Exception('Invalid token format');
+            }
+            
+            $header = json_decode(base64_decode(strtr($tokenParts[0], '-_', '+/')), true);
+            $kid = $header['kid'] ?? null;
+            
+            if (!$kid || !isset($jwks[$kid])) {
+                throw new \Exception('Key ID not found');
+            }
+            
+            // Verify and decode the token
+            $payload = JWT::decode($token, JWK::parseKeySet(['keys' => [$jwks[$kid]]]), ['RS256']);
+            Log::info('Firebase token verified via JWT verification');
+            
+            // Convert to array
+            $payload = json_decode(json_encode($payload), true);
             return $payload;
         } catch (\Exception $e) {
-            Log::warning('Firebase token verification failed', [
+            Log::warning('Firebase token verification via JWT failed', [
                 'error' => $e->getMessage()
             ]);
             return null;
@@ -76,24 +94,34 @@ class SocialAuthController extends Controller
     }
     
     /**
-     * Decode base64url encoded string
+     * Convert an X509 certificate to JWK format
      *
-     * @param string $input
-     * @return string
+     * @param string $cert The X509 certificate
+     * @return array The JWK formatted key
      */
-    private function base64UrlDecode($input)
+    private function convertCertToJwk($cert)
     {
-        // Add padding if needed
-        $remainder = strlen($input) % 4;
-        if ($remainder) {
-            $input .= str_repeat('=', 4 - $remainder);
-        }
+        $pem = chunk_split(base64_encode(base64_decode(str_replace(['-----BEGIN CERTIFICATE-----', '-----END CERTIFICATE-----', '\n', '\r'], '', $cert))), 64, "\n");
+        $pem = "-----BEGIN CERTIFICATE-----\n" . $pem . "-----END CERTIFICATE-----\n";
         
-        // Convert from base64url to base64
-        $input = strtr($input, '-_', '+/');
+        $rsa = RSA::loadX509($pem);
+        $components = $rsa->getPublicKey()->toString('PKCS8');
         
-        // Decode
-        return base64_decode($input);
+        // Extract modulus and exponent
+        $modulus = base64_encode($components['n']->toBytes());
+        $exponent = base64_encode($components['e']->toBytes());
+        
+        // Remove padding
+        $modulus = rtrim(strtr($modulus, '+/', '-_'), '=');
+        $exponent = rtrim(strtr($exponent, '+/', '-_'), '=');
+        
+        return [
+            'kty' => 'RSA',
+            'alg' => 'RS256',
+            'use' => 'sig',
+            'n' => $modulus,
+            'e' => $exponent,
+        ];
     }
 
     /**
@@ -125,17 +153,54 @@ class SocialAuthController extends Controller
                 'token_preview' => substr($request->token, 0, 30) . '...'
             ]);
             
-            // Verify the Firebase token
-            Log::info('Attempting Firebase token verification');
-            $payload = $this->verifyFirebaseToken($request->token);
+            // Try to verify the token
+            $payload = null;
             
-            // Check if we have a valid payload
-            if (!$payload) {
-                Log::error('Invalid Firebase token - verification failed');
-                return response()->json(['message' => 'Invalid Firebase token'], 401);
+            // First try Firebase token verification
+            try {
+                Log::info('Attempting Firebase token verification');
+                $payload = $this->verifyFirebaseToken($request->token);
+                
+                if ($payload) {
+                    Log::info('Firebase token verification successful');
+                }
+            } catch (\Exception $e) {
+                Log::warning('Firebase verification failed, falling back to Google client', [
+                    'error' => $e->getMessage()
+                ]);
             }
             
-            Log::info('Firebase token verification successful');
+            // If Firebase verification failed, try Google Client
+            if (!$payload) {
+                try {
+                    // Verify the Google ID token
+                    $client = new \Google_Client();
+                    $client->setClientId(config('services.google.client_id'));
+                    
+                    Log::info('Google client configured', [
+                        'client_id' => $client->getClientId()
+                    ]);
+                    
+                    Log::info('Attempting Google client token verification');
+                    $payload = $client->verifyIdToken($request->token);
+                    
+                    if (!$payload) {
+                        Log::error('Invalid Google token - null payload');
+                        return response()->json(['message' => 'Invalid Google token - verification failed'], 401);
+                    }
+                } catch (\Exception $e) {
+                    Log::error('Google token verification exception', [
+                        'error' => $e->getMessage()
+                    ]);
+                    return response()->json(['message' => 'Invalid Google token - verification failed'], 401);
+                }
+            }
+            
+            // Final check if we have a valid payload
+            if (!$payload) {
+                Log::error('Invalid Google token - all verification methods failed');
+                return response()->json(['message' => 'Invalid Google token'], 401);
+            }
             
             // Log the payload for debugging
             Log::info('Google token payload', [
@@ -363,8 +428,7 @@ class SocialAuthController extends Controller
     /**
      * Verify Apple identity token.
      * 
-     * This is a simplified version that extracts the payload without cryptographic verification.
-     * In a production environment, you should implement proper JWT verification.
+     * This implements proper JWT verification with Apple's public key.
      *
      * @param string $identityToken
      * @return array|null
@@ -372,41 +436,57 @@ class SocialAuthController extends Controller
     private function verifyAppleToken($identityToken)
     {
         try {
-            // Log the token verification attempt
-            Log::info('Attempting to verify Apple token', [
-                'token_length' => strlen($identityToken),
-                'token_preview' => substr($identityToken, 0, 20) . '...'
-            ]);
+            // Get Apple's public keys
+            $client = new Client();
+            $response = $client->request('GET', 'https://appleid.apple.com/auth/keys');
+            $keys = json_decode($response->getBody(), true);
             
-            // Split the token into its parts
+            if (!isset($keys['keys']) || !is_array($keys['keys'])) {
+                throw new \Exception('Invalid keys response from Apple');
+            }
+            
+            // Decode the token header to get the key ID (kid)
             $tokenParts = explode('.', $identityToken);
             if (count($tokenParts) !== 3) {
                 throw new \Exception('Invalid token format');
             }
             
-            // Decode the payload part
-            $payload = json_decode($this->base64UrlDecode($tokenParts[1]), true);
-            if (!$payload) {
-                throw new \Exception('Invalid token payload');
+            $header = json_decode(base64_decode(strtr($tokenParts[0], '-_', '+/')), true);
+            $kid = $header['kid'] ?? null;
+            
+            if (!$kid) {
+                throw new \Exception('No key ID in token header');
             }
             
-            // Basic validation
-            if (!isset($payload['iss']) || $payload['iss'] !== 'https://appleid.apple.com') {
+            // Find the matching key
+            $publicKey = null;
+            foreach ($keys['keys'] as $key) {
+                if ($key['kid'] === $kid) {
+                    // Convert JWK to PEM format
+                    $publicKey = $this->jwkToPem($key);
+                    break;
+                }
+            }
+            
+            if (!$publicKey) {
+                throw new \Exception('No matching key found for kid: ' . $kid);
+            }
+            
+            // Verify and decode the token
+            $payload = JWT::decode($identityToken, $publicKey, ['RS256']);
+            
+            // Verify the issuer and audience
+            if ($payload->iss !== 'https://appleid.apple.com') {
                 throw new \Exception('Invalid issuer');
             }
             
-            if (!isset($payload['sub']) || empty($payload['sub'])) {
-                throw new \Exception('Missing subject identifier');
+            $clientId = config('services.apple.client_id');
+            if (!in_array($payload->aud, [$clientId, 'com.mmartplus.app'])) {
+                throw new \Exception('Invalid audience');
             }
             
-            // For development purposes, we'll accept the token without full verification
-            // In production, you should implement proper JWT verification with Apple's public keys
-            Log::info('Apple token payload extracted', [
-                'sub' => $payload['sub'] ?? 'missing',
-                'email' => $payload['email'] ?? 'missing'
-            ]);
-            
-            return $payload;
+            // Convert to array
+            return json_decode(json_encode($payload), true);
         } catch (\Exception $e) {
             Log::error('Apple token verification failed', [
                 'error' => $e->getMessage()
@@ -415,4 +495,50 @@ class SocialAuthController extends Controller
         }
     }
     
+    /**
+     * Convert a JWK (JSON Web Key) to PEM format
+     *
+     * @param array $jwk
+     * @return string
+     */
+    private function jwkToPem($jwk)
+    {
+        // Ensure we have the necessary key components
+        if (!isset($jwk['kty']) || $jwk['kty'] !== 'RSA') {
+            throw new \Exception('Invalid key type');
+        }
+        
+        if (!isset($jwk['n']) || !isset($jwk['e'])) {
+            throw new \Exception('Missing key components');
+        }
+        
+        // Convert base64url encoded values to binary
+        $modulus = new BigInteger($this->urlsafeB64ToHex($jwk['n']), 16);
+        $exponent = new BigInteger($this->urlsafeB64ToHex($jwk['e']), 16);
+        
+        // Create RSA key
+        $rsa = RSA::createKey();
+        $rsa = $rsa->withModulus($modulus)->withExponent($exponent);
+        
+        // Export public key in PEM format
+        return $rsa->toString('PKCS8');
+    }
+    
+    /**
+     * Convert URL safe base64 to hexadecimal
+     *
+     * @param string $b64
+     * @return string
+     */
+    private function urlsafeB64ToHex($b64)
+    {
+        // Add padding if needed
+        $padded = str_pad($b64, strlen($b64) + (4 - strlen($b64) % 4) % 4, '=');
+        
+        // Convert from base64url to base64
+        $base64 = strtr($padded, '-_', '+/');
+        
+        // Decode and convert to hex
+        return bin2hex(base64_decode($base64));
+    }
 }

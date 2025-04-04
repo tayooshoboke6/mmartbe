@@ -4,6 +4,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\Auth\SocialAuthController;
+use App\Http\Controllers\Auth\FirebaseAuthController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\OrderController;
@@ -46,8 +47,13 @@ Route::post('/send-verification-code', [AuthController::class, 'sendVerification
 Route::post('/direct-verification-code', [\App\Http\Controllers\Auth\DirectSmsController::class, 'sendVerificationCode']);
 Route::post('/verify-phone', [AuthController::class, 'verifyPhone']);
 Route::post('/login', [AuthController::class, 'login']);
+// Legacy social auth endpoints
 Route::post('/auth/google', [SocialAuthController::class, 'googleAuth']);
 Route::post('/auth/apple', [SocialAuthController::class, 'appleAuth']);
+
+// Firebase auth endpoints
+Route::post('/auth/firebase/google', [FirebaseAuthController::class, 'handleGoogleAuth']);
+Route::post('/auth/firebase/apple', [FirebaseAuthController::class, 'handleAppleAuth']);
 Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
 Route::post('/reset-password', [AuthController::class, 'resetPassword']);
 Route::post('/update-phone', [AuthController::class, 'updatePhone']);
