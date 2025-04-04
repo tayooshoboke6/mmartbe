@@ -50,16 +50,16 @@ return [
     ],
 
     'google' => [
-        'client_id' => env('GOOGLE_CLIENT_ID'),
+        'client_id' => env('GOOGLE_CLIENT_ID', '608587869148-iv4domm1d4h4ah198027feaplts05iae.apps.googleusercontent.com'),
         'client_secret' => env('GOOGLE_CLIENT_SECRET'),
-        'redirect' => env('GOOGLE_REDIRECT_URI'),
+        'redirect' => env('GOOGLE_REDIRECT_URI', 'http://localhost:3000/auth/google/callback'),
         'maps_api_key' => env('GOOGLE_MAPS_API_KEY'),
     ],
 
     'apple' => [
-        'client_id' => env('APPLE_CLIENT_ID'),
+        'client_id' => env('APPLE_CLIENT_ID', 'com.mmartplus.app'),
         'client_secret' => env('APPLE_CLIENT_SECRET'),
-        'redirect' => env('APPLE_REDIRECT_URI'),
+        'redirect' => env('APPLE_REDIRECT_URI', 'http://localhost:3000/auth/apple/callback'),
         'team_id' => env('APPLE_TEAM_ID'),
         'key_id' => env('APPLE_KEY_ID'),
         'private_key' => env('APPLE_PRIVATE_KEY'),
