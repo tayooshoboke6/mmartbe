@@ -74,6 +74,13 @@
     .content {
       padding: 45px 60px;
     }
+    
+    .content p {
+      margin: 16px 0;
+      line-height: 1.6;
+      padding-left: 5px;
+      padding-right: 5px;
+    }
 
     .content h2 {
       margin-top: 0;
@@ -114,8 +121,6 @@
       padding: 15px;
       border-bottom: 1px solid #e0e0e0;
       text-align: left;
-      word-break: break-word;
-      white-space: normal;
     }
 
     .order-summary th {
@@ -141,13 +146,7 @@
       font-size: 16px;
     }
 
-    .footer {
-      background: #173CB2;
-      text-align: center;
-      padding: 25px;
-      font-size: 14px;
-      color: rgba(255,255,255,0.8);
-    }
+    /* Footer styles removed and replaced with inline styles */
 
     .btn {
       display: inline-block;
@@ -202,11 +201,11 @@
       }
 
       .header {
-        padding: 30px 25px;
+        padding: 30px 35px;
       }
 
       .content {
-        padding: 30px 25px;
+        padding: 30px 35px;
       }
 
       .status-box, .address-box {
@@ -232,68 +231,68 @@
       <div class="logo-container">
         <img src="{{ asset('images/logo-icon.png') }}" alt="M-Mart+ Logo">
       </div>
-      <h1 class="header-title">Order Confirmation</h1>
-      <p class="header-subtitle">Thank you for your purchase!</p>
+      <h1 class="header-title" style="padding: 0 10px;">Order Confirmation</h1>
+      <p class="header-subtitle" style="padding: 0 10px;">Thank you for your purchase!</p>
     </div>
 
-    <div class="content">
-      <h2>Hello {{ $user->name ?? 'Customer' }},</h2>
+    <div class="content" style="margin-top: 25px;">
+      <h2 style="padding: 0 5px;">Hello {{ $user->name ?? 'Customer' }},</h2>
 
-      <p>We're excited to confirm that we've received your order and it's now being processed. Below you'll find all the details of your purchase.</p>
+      <p style="padding: 0 5px;">We're excited to confirm that we've received your order and it's now being processed. Below you'll find all the details of your purchase.</p>
 
       <div class="status-box">
-        <p><strong>Order Number:</strong> {{ $order->order_number }}</p>
-        <p><strong>Order Date:</strong> {{ $order->created_at->format('d/m/Y H:i') }}</p>
-        <p><strong>Payment Method:</strong> {{ ucfirst(str_replace('_', ' ', $order->payment_method)) }}</p>
-        <p><strong>Order Status:</strong> {{ ucfirst($order->status) }}</p>
-        <p><strong>Payment Status:</strong> {{ ucfirst($order->payment_status) }}</p>
+        <p><strong>Order Number:</strong> <span style="white-space: nowrap;">{{ $order->order_number }}</span></p>
+        <p><strong>Order Date:</strong> <span style="white-space: nowrap;">{{ $order->created_at->format('d/m/Y H:i') }}</span></p>
+        <p><strong>Payment Method:</strong> <span style="white-space: nowrap;">{{ ucfirst(str_replace('_', ' ', $order->payment_method)) }}</span></p>
+        <p><strong>Order Status:</strong> <span style="white-space: nowrap;">{{ ucfirst($order->status) }}</span></p>
+        <p><strong>Payment Status:</strong> <span style="white-space: nowrap;">{{ ucfirst($order->payment_status) }}</span></p>
       </div>
 
       <h3 class="section-title"><span>🛍️</span> Items Ordered</h3>
       <table class="order-summary">
         <thead>
           <tr>
-            <th>Item</th>
-            <th>Qty</th>
-            <th>Price</th>
-            <th>Total</th>
+            <th style="width: 45%;">Item</th>
+            <th style="width: 10%;">Qty</th>
+            <th style="width: 20%;">Price</th>
+            <th style="width: 25%;">Total</th>
           </tr>
         </thead>
         <tbody>
           @foreach($orderItems as $item)
             <tr>
-              <td>{{ $item->product_name }}</td>
+              <td style="max-width: 200px; overflow-wrap: break-word; word-wrap: break-word;">{{ $item->product_name }}</td>
               <td>{{ $item->quantity }}</td>
-              <td>₦{{ number_format($item->unit_price, 2) }}</td>
-              <td>₦{{ number_format($item->subtotal, 2) }}</td>
+              <td style="white-space: nowrap;"><nobr>₦{{ number_format($item->unit_price, 2) }}</nobr></td>
+              <td style="white-space: nowrap;"><nobr>₦{{ number_format($item->subtotal, 2) }}</nobr></td>
             </tr>
           @endforeach
 
           <tr>
             <td colspan="3">Subtotal</td>
-            <td>₦{{ number_format($order->subtotal, 2) }}</td>
+            <td style="white-space: nowrap;"><nobr>₦{{ number_format($order->subtotal, 2) }}</nobr></td>
           </tr>
 
           @if($order->discount > 0)
           <tr>
             <td colspan="3">Discount</td>
-            <td>-₦{{ number_format($order->discount, 2) }}</td>
+            <td style="white-space: nowrap;"><nobr>-₦{{ number_format($order->discount, 2) }}</nobr></td>
           </tr>
           @endif
 
           <tr>
             <td colspan="3">Shipping</td>
-            <td>₦{{ number_format($order->shipping_fee, 2) }}</td>
+            <td style="white-space: nowrap;"><nobr>₦{{ number_format($order->shipping_fee, 2) }}</nobr></td>
           </tr>
 
           <tr>
             <td colspan="3">Tax</td>
-            <td>₦{{ number_format($order->tax, 2) }}</td>
+            <td style="white-space: nowrap;"><nobr>₦{{ number_format($order->tax, 2) }}</nobr></td>
           </tr>
 
           <tr class="total-row">
             <td colspan="3">Total</td>
-            <td>₦{{ number_format($order->grand_total, 2) }}</td>
+            <td style="white-space: nowrap;"><nobr>₦{{ number_format($order->grand_total, 2) }}</nobr></td>
           </tr>
         </tbody>
       </table>
@@ -301,11 +300,11 @@
       @if($order->delivery_method == 'shipping')
         <h3 class="section-title"><span>📦</span> Shipping Information</h3>
         <div class="address-box">
-          <p><strong>Address:</strong> {{ $order->shipping_address }}</p>
-          <p><strong>City:</strong> {{ $order->shipping_city }}</p>
-          <p><strong>State:</strong> {{ $order->shipping_state }}</p>
-          <p><strong>Zip Code:</strong> {{ $order->shipping_zip_code }}</p>
-          <p><strong>Phone:</strong> {{ $order->shipping_phone }}</p>
+          <p><strong>Address:</strong> <span style="white-space: nowrap;">{{ $order->shipping_address }}</span></p>
+          <p><strong>City:</strong> <span style="white-space: nowrap;">{{ $order->shipping_city }}</span></p>
+          <p><strong>State:</strong> <span style="white-space: nowrap;">{{ $order->shipping_state }}</span></p>
+          <p><strong>Zip Code:</strong> <span style="white-space: nowrap;">{{ $order->shipping_zip_code }}</span></p>
+          <p><strong>Phone:</strong> <span style="white-space: nowrap;">{{ $order->shipping_phone }}</span></p>
         </div>
       @else
         <h3 class="section-title"><span>🏬</span> Pickup Information</h3>
@@ -324,9 +323,19 @@
       </div>
     </div>
 
-    <div class="footer">
-      &copy; {{ date('Y') }} M-Mart+. All rights reserved.
-    </div>
+    <table width="100%" border="0" cellpadding="0" cellspacing="0" bgcolor="#173CB2" style="background-color: #173CB2;">
+      <tr>
+        <td align="center" style="padding: 25px 0;">
+          <table width="250" border="0" cellpadding="0" cellspacing="0">
+            <tr>
+              <td align="center" style="text-align:center; font-size: 14px; color: rgba(255,255,255,0.8);">
+                &copy; {{ date('Y') }} M-Mart+. All rights reserved.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
   </div>
 
 </body>

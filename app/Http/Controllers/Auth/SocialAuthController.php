@@ -286,12 +286,23 @@ class SocialAuthController extends Controller
         }
 
         try {
-            // Verify Apple identity token
-            $payload = $this->verifyAppleToken($request->token);
+            // Log the token for debugging
+            Log::info('Apple auth attempt with token', [
+                'token_length' => strlen($request->token),
+                'token_preview' => substr($request->token, 0, 30) . '...'
+            ]);
             
+            // Verify the Firebase token (not the Apple token directly)
+            Log::info('Attempting Firebase token verification for Apple auth');
+            $payload = $this->verifyFirebaseToken($request->token);
+            
+            // Check if we have a valid payload
             if (!$payload) {
-                return response()->json(['message' => 'Invalid Apple token'], 401);
+                Log::error('Invalid Firebase token - verification failed');
+                return response()->json(['message' => 'Invalid Firebase token'], 401);
             }
+            
+            Log::info('Firebase token verification successful for Apple auth');
             
             // Get user info from payload
             $appleId = $payload['sub'];

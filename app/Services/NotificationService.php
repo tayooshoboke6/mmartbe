@@ -274,7 +274,7 @@ class NotificationService
             $message = "Order #{$order->order_number} Update: {$statusMessage}";
             
             $termiiService = new TermiiService();
-            $result = $termiiService->sendSms($user->phone, $message);
+            $result = $termiiService->sendMessage($user->phone, null, $message);
             
             if ($result['success']) {
                 Log::info("Order status update SMS sent for order #{$order->order_number}: {$oldStatus} -> {$newStatus}");
@@ -319,7 +319,7 @@ class NotificationService
             $message = "LOW STOCK ALERT: {$product->name} (SKU: {$product->sku}) has only {$product->stock_quantity} units left. Threshold: {$threshold}.";
             
             $termiiService = new TermiiService();
-            $result = $termiiService->sendSms($adminPhone, $message);
+            $result = $termiiService->sendMessage($adminPhone, null, $message);
             
             if ($result['success']) {
                 Log::info("Low stock SMS alert sent for product #{$product->id}: {$product->name}");

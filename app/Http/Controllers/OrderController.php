@@ -98,9 +98,9 @@ class OrderController extends Controller
         $user = $request->user();
         
         $validator = Validator::make($request->all(), [
-            'payment_method' => 'required|string|in:card,bank_transfer,mobile_money,cash_on_delivery',
-            'payment_gateway' => 'required_if:payment_method,card|string',
-            'payment_reference' => 'required_if:payment_method,card|string',
+            'payment_method' => 'required|string|in:bank_transfer,paystack,flutterwave,cash_on_delivery',
+            'payment_gateway' => 'required_if:payment_method,paystack,flutterwave|string',
+            'payment_reference' => 'required_if:payment_method,paystack,flutterwave|string',
             'delivery_method' => 'required|string|in:shipping,pickup',
             'coupon_code' => 'nullable|string|exists:coupons,code',
             'notes' => 'nullable|string',

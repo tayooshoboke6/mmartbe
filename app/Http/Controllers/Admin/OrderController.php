@@ -161,7 +161,14 @@ class OrderController extends Controller
             
             // Update payment status based on order status
             $paymentStatus = $order->payment_status;
-            if ($newStatus === Order::STATUS_COMPLETED && $paymentStatus === Order::PAYMENT_PENDING) {
+            
+            // For bank transfers, automatically mark as paid when status changes to processing
+            if ($newStatus === Order::STATUS_PROCESSING && $paymentStatus === Order::PAYMENT_PENDING && $order->payment_method === 'bank_transfer') {
+                $paymentStatus = Order::PAYMENT_PAID;
+                Log::info("Bank transfer payment automatically marked as paid for order #{$order->order_number}");
+            }
+            // Standard payment status updates
+            elseif ($newStatus === Order::STATUS_COMPLETED && $paymentStatus === Order::PAYMENT_PENDING) {
                 $paymentStatus = Order::PAYMENT_PAID;
             } elseif ($newStatus === Order::STATUS_CANCELLED && $paymentStatus === Order::PAYMENT_PENDING) {
                 $paymentStatus = Order::PAYMENT_FAILED;
