@@ -24,7 +24,7 @@ class FlutterwaveServiceProvider extends ServiceProvider
     {
         try {
             // Load Flutterwave-specific environment variables
-            $flutterwaveDotenv = Dotenv::createImmutable(base_path(), '.env.flutterwave');
+            $flutterwaveDotenv = Dotenv::createImmutable(base_path(), '.env');
             $flutterwaveDotenv->load();
             
             // Get config from environment variables (fallback to our custom variables if needed)
