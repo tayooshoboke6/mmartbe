@@ -134,11 +134,12 @@ class PaymentController extends Controller
                     'amount' => (string) $order->grand_total,
                     'currency' => 'NGN',
                     'payment_options' => 'card, mobilemoney, ussd',
-                    'redirect_url' => $request->redirect_url ?? env('FLUTTERWAVE_CALLBACK_URL', 'https://m-martplus.com/payments/callback'),
+                    'redirect_url' => $request->redirect_url ?? env('FLUTTERWAVE_CALLBACK_URL', 'http://localhost:3000/payments/callback'),
                     'customer' => [
                         'email' => $request->email,
                         'phonenumber' => $request->phone_number,
-                        'name' => $request->name
+                        'name' => $request->name,
+                        'country' => $request->country
                     ],
                     'meta' => [
                         'order_id' => $order->id,
