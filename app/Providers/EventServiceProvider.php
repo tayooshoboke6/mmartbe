@@ -18,6 +18,10 @@ class EventServiceProvider extends ServiceProvider
         Registered::class => [
             SendEmailVerificationNotification::class,
         ],
+        \App\Events\OrderExpired::class => [
+            \App\Listeners\SendOrderExpirationNotification::class,
+            \App\Listeners\RecordOrderExpirationAnalytics::class,
+        ],
     ];
 
     /**
