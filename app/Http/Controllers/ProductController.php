@@ -945,30 +945,31 @@ class ProductController extends Controller
 
             // For 24-hour analysis, group by hour instead of day
             if ($startDate->diffInHours(Carbon::now()) <= 24) {
-                $daysData = $query
-                    ->select(
-                        DB::raw('HOUR(created_at) as hour'),
-                        DB::raw('DATE_FORMAT(created_at, "%Y-%m-%d %H:00:00") as day'),
-                        DB::raw('COUNT(*) as order_count'),
-                        DB::raw('SUM(grand_total) as revenue'),
-                        DB::raw('AVG(grand_total) as avg_order_value')
-                    )
-                    ->groupBy(DB::raw('HOUR(created_at)'))
-                    ->orderBy('day')
+                // For 24-hour view, we want to ensure we're only using today's data
+                // Get today's date
+                $today = date('Y-m-d');
+                
+                // Get all today's orders directly
+                $todayOrders = DB::table('orders')
+                    ->where('status', '!=', 'cancelled')
+                    ->where('payment_status', 'paid')
+                    ->whereDate('created_at', '=', $today)
+                    ->select('id', 'grand_total', 'created_at')
                     ->get();
-
-                // Fill in missing hours
-                $filledData = [];
-                for ($i = 0; $i < 24; $i++) {
-                    $hourData = $daysData->firstWhere('hour', $i);
-                    $filledData[] = (object)[
-                        'day' => sprintf('%02d:00', $i),
-                        'order_count' => $hourData ? $hourData->order_count : 0,
-                        'revenue' => $hourData ? $hourData->revenue : 0,
-                        'avg_order_value' => $hourData ? $hourData->avg_order_value : 0
-                    ];
-                }
-                $daysData = collect($filledData);
+                
+                // Create a single entry for today with the actual count and revenue
+                $dayName = date('l'); // Today's name (e.g., 'Saturday')
+                $totalOrders = $todayOrders->count();
+                $totalRevenue = $todayOrders->sum('grand_total');
+                
+                $daysData = collect([
+                    (object)[
+                        'day' => $dayName,
+                        'order_count' => $totalOrders,
+                        'revenue' => $totalRevenue,
+                        'avg_order_value' => $totalOrders > 0 ? $totalRevenue / $totalOrders : 0
+                    ]
+                ]);
             } else {
                 $daysData = $query
                     ->select(
@@ -1049,18 +1050,31 @@ class ProductController extends Controller
             $startDate = $request->query('start_date') ? 
                 Carbon::parse($request->query('start_date')) : 
                 Carbon::now()->subDays(30)->startOfDay();
+                
+            $endDate = Carbon::now();
+            $diffHours = $startDate->diffInHours($endDate);
+            $timeRange = $diffHours <= 24 ? '24hours' : 
+                         ($diffHours <= 168 ? '7days' : 
+                         ($diffHours <= 720 ? '30days' : '90days'));
 
             $query = DB::table('orders')
                 ->where('status', '!=', 'cancelled')
                 ->where('payment_status', 'paid')
                 ->where('created_at', '>=', $startDate);
 
-            // For 24-hour analysis, group by hour instead of day
-            if ($startDate->diffInHours(Carbon::now()) <= 24) {
-                $hoursData = $query
+            // Different analysis based on time range
+            if ($timeRange === '24hours') {
+                // For 24-hour view: Analyze specific hours within today only
+                // Reset the query to explicitly filter by today's date
+                $todayQuery = DB::table('orders')
+                    ->where('status', '!=', 'cancelled')
+                    ->where('payment_status', 'paid')
+                    ->whereDate('created_at', '=', date('Y-m-d'));
+                
+                $hoursData = $todayQuery
                     ->select(
                         DB::raw('HOUR(created_at) as hour'),
-                        DB::raw('DATE_FORMAT(created_at, "%H:00") as day'),
+                        DB::raw('DATE_FORMAT(created_at, "%H:00") as hour_formatted'),
                         DB::raw('COUNT(*) as order_count'),
                         DB::raw('SUM(grand_total) as revenue'),
                         DB::raw('AVG(grand_total) as avg_order_value')
@@ -1069,7 +1083,7 @@ class ProductController extends Controller
                     ->orderBy(DB::raw('HOUR(created_at)'))
                     ->get();
 
-                // Fill in missing hours
+                // Fill in all hours for today (0-23) in sequential order
                 $filledData = [];
                 for ($i = 0; $i < 24; $i++) {
                     $hourData = $hoursData->firstWhere('hour', $i);
@@ -1078,22 +1092,94 @@ class ProductController extends Controller
                         'hour_formatted' => sprintf('%02d:00', $i),
                         'order_count' => $hourData ? $hourData->order_count : 0,
                         'revenue' => $hourData ? $hourData->revenue : 0,
-                        'avg_order_value' => $hourData ? $hourData->avg_order_value : 0
+                        'avg_order_value' => $hourData ? $hourData->avg_order_value : 0,
+                        'time_range' => '24hours'
                     ];
                 }
+                // Sort by hour for consistent display
+                usort($filledData, function($a, $b) {
+                    return $a->hour - $b->hour;
+                });
                 $hoursData = collect($filledData);
-            } else {
+            } 
+            elseif ($timeRange === '7days') {
+                // For 7-day view: Analyze day-hour combinations
+                $rawData = $query
+                    ->select(
+                        DB::raw('DATE(created_at) as date'),
+                        DB::raw('HOUR(created_at) as hour'),
+                        DB::raw('DAYNAME(created_at) as day_name'),
+                        DB::raw('COUNT(*) as order_count'),
+                        DB::raw('SUM(grand_total) as revenue')
+                    )
+                    ->groupBy(DB::raw('DATE(created_at), HOUR(created_at), DAYNAME(created_at)'))
+                    ->orderBy(DB::raw('DATE(created_at)'), 'desc')
+                    ->orderBy(DB::raw('HOUR(created_at)'))
+                    ->get();
+                
+                // Group by hour to find the most active hour across the week
+                $hourlyAggregates = [];
+                foreach ($rawData as $item) {
+                    if (!isset($hourlyAggregates[$item->hour])) {
+                        $hourlyAggregates[$item->hour] = [
+                            'hour' => $item->hour,
+                            'hour_formatted' => sprintf('%02d:00', $item->hour),
+                            'order_count' => 0,
+                            'revenue' => 0,
+                            'days' => []
+                        ];
+                    }
+                    
+                    $hourlyAggregates[$item->hour]['order_count'] += $item->order_count;
+                    $hourlyAggregates[$item->hour]['revenue'] += $item->revenue;
+                    $hourlyAggregates[$item->hour]['days'][] = [
+                        'date' => $item->date,
+                        'day_name' => $item->day_name,
+                        'order_count' => $item->order_count,
+                        'revenue' => $item->revenue
+                    ];
+                }
+                
+                // Fill in missing hours
+                $filledData = [];
+                for ($i = 0; $i < 24; $i++) {
+                    if (isset($hourlyAggregates[$i])) {
+                        $hourlyAggregates[$i]['time_range'] = '7days';
+                        // Add avg_order_value to prevent undefined property error
+                        $hourlyAggregates[$i]['avg_order_value'] = $hourlyAggregates[$i]['order_count'] > 0 ? 
+                            $hourlyAggregates[$i]['revenue'] / $hourlyAggregates[$i]['order_count'] : 0;
+                        $filledData[] = (object)$hourlyAggregates[$i];
+                    } else {
+                        $filledData[] = (object)[
+                            'hour' => $i,
+                            'hour_formatted' => sprintf('%02d:00', $i),
+                            'order_count' => 0,
+                            'revenue' => 0,
+                            'avg_order_value' => 0,
+                            'days' => [],
+                            'time_range' => '7days'
+                        ];
+                    }
+                }
+                $hoursData = collect($filledData);
+            }
+            else {
+                // For 30/90-day view: Analyze hour patterns across the entire period
                 $hoursData = $query
                     ->select(
                         DB::raw('HOUR(created_at) as hour'),
                         DB::raw('COUNT(*) as order_count'),
                         DB::raw('SUM(grand_total) as revenue'),
-                        DB::raw('AVG(grand_total) as avg_order_value')
+                        DB::raw('AVG(grand_total) as avg_order_value'),
+                        DB::raw('COUNT(DISTINCT DATE(created_at)) as active_days')
                     )
                     ->groupBy('hour')
                     ->orderBy('hour')
                     ->get();
 
+                // Calculate daily averages for more meaningful comparisons
+                $totalDays = $startDate->diffInDays($endDate) + 1;
+                
                 // Fill in missing hours
                 $filledData = [];
                 for ($i = 0; $i < 24; $i++) {
@@ -1103,33 +1189,99 @@ class ProductController extends Controller
                         'hour_formatted' => sprintf('%02d:00', $i),
                         'order_count' => $hourData ? $hourData->order_count : 0,
                         'revenue' => $hourData ? $hourData->revenue : 0,
-                        'avg_order_value' => $hourData ? $hourData->avg_order_value : 0
+                        'avg_order_value' => $hourData ? $hourData->avg_order_value : 0,
+                        'active_days' => $hourData ? $hourData->active_days : 0,
+                        'daily_avg_orders' => $hourData ? round($hourData->order_count / $totalDays, 2) : 0,
+                        'daily_avg_revenue' => $hourData ? round($hourData->revenue / $totalDays, 2) : 0,
+                        'time_range' => $timeRange
                     ];
                 }
                 $hoursData = collect($filledData);
             }
 
-            // Calculate metrics
-            $maxOrders = $hoursData->max('order_count');
-            $minOrders = $hoursData->min('order_count');
-            $maxRevenue = $hoursData->max('revenue');
-            $minRevenue = $hoursData->min('revenue');
+            // Calculate metrics based on time range
+            if ($timeRange === '24hours') {
+                // For 24-hour view: Only consider hours with actual data
+                $nonZeroHours = $hoursData->filter(function($item) {
+                    return $item->order_count > 0;
+                });
+                
+                $maxOrders = $nonZeroHours->isEmpty() ? 0 : $nonZeroHours->max('order_count');
+                $minOrders = $nonZeroHours->isEmpty() ? 0 : $nonZeroHours->min('order_count');
+                $maxRevenue = $nonZeroHours->isEmpty() ? 0 : $nonZeroHours->max('revenue');
+                $minRevenue = $nonZeroHours->isEmpty() ? 0 : $nonZeroHours->min('revenue');
+                
+                // If no orders in the last 24 hours, use all hours
+                if ($nonZeroHours->isEmpty()) {
+                    $maxOrders = $hoursData->max('order_count');
+                    $minOrders = $hoursData->min('order_count');
+                    $maxRevenue = $hoursData->max('revenue');
+                    $minRevenue = $hoursData->min('revenue');
+                }
+            } 
+            elseif ($timeRange === '7days') {
+                // For 7-day view: Consider specific day-hour combinations
+                $maxOrders = $hoursData->max('order_count');
+                $minOrders = $hoursData->filter(function($item) {
+                    return $item->order_count > 0; // Only consider hours with orders
+                })->min('order_count') ?? 0;
+                $maxRevenue = $hoursData->max('revenue');
+                $minRevenue = $hoursData->filter(function($item) {
+                    return $item->revenue > 0; // Only consider hours with revenue
+                })->min('revenue') ?? 0;
+            }
+            else {
+                // For 30/90-day view: Use daily averages for more meaningful comparison
+                $maxOrders = $hoursData->max('daily_avg_orders');
+                $minOrders = $hoursData->filter(function($item) {
+                    return $item->daily_avg_orders > 0; // Only consider hours with orders
+                })->min('daily_avg_orders') ?? 0;
+                $maxRevenue = $hoursData->max('daily_avg_revenue');
+                $minRevenue = $hoursData->filter(function($item) {
+                    return $item->daily_avg_revenue > 0; // Only consider hours with revenue
+                })->min('daily_avg_revenue') ?? 0;
+            }
 
             // Enhance data with peak/low indicators
-            $enhancedData = $hoursData->map(function($item) use ($maxOrders, $minOrders, $maxRevenue, $minRevenue) {
-                return [
+            $enhancedData = $hoursData->map(function($item) use ($maxOrders, $minOrders, $maxRevenue, $minRevenue, $timeRange) {
+                $baseData = [
                     'hour' => $item->hour,
                     'hour_formatted' => $item->hour_formatted,
                     'order_count' => $item->order_count,
                     'revenue' => $item->revenue,
-                    'avg_order_value' => $item->avg_order_value,
-                    'is_peak_orders' => $item->order_count == $maxOrders && $item->order_count > 0,
-                    'is_low_orders' => $item->order_count == $minOrders,
-                    'is_peak_revenue' => $item->revenue == $maxRevenue && $item->revenue > 0,
-                    'is_low_revenue' => $item->revenue == $minRevenue,
-                    'performance_score' => $maxOrders > 0 ? 
-                        ($item->order_count / $maxOrders + ($maxRevenue > 0 ? $item->revenue / $maxRevenue : 0)) / 2 * 100 : 0
+                    'time_range' => $timeRange
                 ];
+                
+                if ($timeRange === '24hours' || $timeRange === '7days') {
+                    $baseData['is_peak_orders'] = $item->order_count == $maxOrders && $item->order_count > 0;
+                    $baseData['is_low_orders'] = $item->order_count == $minOrders && $item->order_count > 0;
+                    $baseData['is_peak_revenue'] = $item->revenue == $maxRevenue && $item->revenue > 0;
+                    $baseData['is_low_revenue'] = $item->revenue == $minRevenue && $item->revenue > 0;
+                    $baseData['avg_order_value'] = $item->avg_order_value;
+                } else {
+                    // For 30/90-day view, use daily averages
+                    $baseData['daily_avg_orders'] = $item->daily_avg_orders;
+                    $baseData['daily_avg_revenue'] = $item->daily_avg_revenue;
+                    $baseData['active_days'] = $item->active_days;
+                    $baseData['is_peak_orders'] = $item->daily_avg_orders == $maxOrders && $item->daily_avg_orders > 0;
+                    $baseData['is_low_orders'] = $item->daily_avg_orders == $minOrders && $item->daily_avg_orders > 0;
+                    $baseData['is_peak_revenue'] = $item->daily_avg_revenue == $maxRevenue && $item->daily_avg_revenue > 0;
+                    $baseData['is_low_revenue'] = $item->daily_avg_revenue == $minRevenue && $item->daily_avg_revenue > 0;
+                    // Add avg_order_value to prevent undefined property error
+                    $baseData['avg_order_value'] = isset($item->avg_order_value) ? $item->avg_order_value : 
+                        ($item->order_count > 0 ? $item->revenue / $item->order_count : 0);
+                }
+                
+                // Calculate performance score
+                if ($timeRange === '24hours' || $timeRange === '7days') {
+                    $baseData['performance_score'] = $maxOrders > 0 ? 
+                        ($item->order_count / $maxOrders + ($maxRevenue > 0 ? $item->revenue / $maxRevenue : 0)) / 2 * 100 : 0;
+                } else {
+                    $baseData['performance_score'] = $maxOrders > 0 ? 
+                        ($item->daily_avg_orders / $maxOrders + ($maxRevenue > 0 ? $item->daily_avg_revenue / $maxRevenue : 0)) / 2 * 100 : 0;
+                }
+                
+                return $baseData;
             });
 
             // Group into time segments
@@ -1141,35 +1293,88 @@ class ProductController extends Controller
             ];
 
             $segmentAnalysis = [];
-            foreach ($segments as $name => $hours) {
-                $segmentData = $enhancedData->filter(function($item) use ($hours) {
-                    return $item['hour'] >= $hours[0] && $item['hour'] <= $hours[1];
-                });
+            
+            // For 24-hour view, we need a completely different approach
+            if ($timeRange === '24hours') {
+                // Get today's date
+                $today = date('Y-m-d');
                 
-                if ($segmentData->isNotEmpty()) {
-                    $segmentAnalysis[$name] = [
-                        'total_orders' => $segmentData->sum('order_count'),
-                        'total_revenue' => $segmentData->sum('revenue'),
-                        'avg_performance' => $segmentData->avg('performance_score')
-                    ];
-                } else {
+                // Initialize all segments with zero values
+                foreach ($segments as $name => $hours) {
                     $segmentAnalysis[$name] = [
                         'total_orders' => 0,
                         'total_revenue' => 0,
                         'avg_performance' => 0
                     ];
                 }
+                
+                // Get all today's orders directly
+                $todayOrders = DB::table('orders')
+                    ->where('status', '!=', 'cancelled')
+                    ->where('payment_status', 'paid')
+                    ->whereDate('created_at', '=', $today)
+                    ->select('id', 'grand_total', 'created_at')
+                    ->get();
+                
+                // Manually assign each order to its segment
+                foreach ($todayOrders as $order) {
+                    $hour = (int)date('G', strtotime($order->created_at));
+                    
+                    // Determine which segment this hour belongs to
+                    $segmentName = null;
+                    foreach ($segments as $name => $hourRange) {
+                        if ($hour >= $hourRange[0] && $hour <= $hourRange[1]) {
+                            $segmentName = $name;
+                            break;
+                        }
+                    }
+                    
+                    if ($segmentName) {
+                        $segmentAnalysis[$segmentName]['total_orders'] += 1;
+                        $segmentAnalysis[$segmentName]['total_revenue'] += $order->grand_total;
+                    }
+                }
+            } else {
+                // For other time ranges, use the enhanced data
+                foreach ($segments as $name => $hours) {
+                    $segmentData = $enhancedData->filter(function($item) use ($hours) {
+                        return $item['hour'] >= $hours[0] && $item['hour'] <= $hours[1];
+                    });
+                    
+                    if ($segmentData->isNotEmpty()) {
+                        $segmentAnalysis[$name] = [
+                            'total_orders' => $segmentData->sum('order_count'),
+                            'total_revenue' => $segmentData->sum('revenue'),
+                            'avg_performance' => $segmentData->avg('performance_score')
+                        ];
+                    } else {
+                        $segmentAnalysis[$name] = [
+                            'total_orders' => 0,
+                            'total_revenue' => 0,
+                            'avg_performance' => 0
+                        ];
+                    }
+                }
             }
 
+            // Find peak and low hours
+            $peakOrdersHour = $enhancedData->firstWhere('is_peak_orders', true);
+            $lowOrdersHour = $enhancedData->firstWhere('is_low_orders', true);
+            $peakRevenueHour = $enhancedData->firstWhere('is_peak_revenue', true);
+            $lowRevenueHour = $enhancedData->firstWhere('is_low_revenue', true);
+            
+            // Add time range to metrics
             return response()->json([
                 'status' => 'success',
                 'data' => $enhancedData,
                 'segments' => $segmentAnalysis,
+                'time_range' => $timeRange,
                 'metrics' => [
-                    'peak_orders_hour' => $enhancedData->firstWhere('is_peak_orders', true)['hour_formatted'] ?? null,
-                    'low_orders_hour' => $enhancedData->firstWhere('is_low_orders', true)['hour_formatted'] ?? null,
-                    'peak_revenue_hour' => $enhancedData->firstWhere('is_peak_revenue', true)['hour_formatted'] ?? null,
-                    'low_revenue_hour' => $enhancedData->firstWhere('is_low_revenue', true)['hour_formatted'] ?? null,
+                    'peak_orders_hour' => $peakOrdersHour ? $peakOrdersHour['hour_formatted'] : null,
+                    'low_orders_hour' => $lowOrdersHour ? $lowOrdersHour['hour_formatted'] : null,
+                    'peak_revenue_hour' => $peakRevenueHour ? $peakRevenueHour['hour_formatted'] : null,
+                    'low_revenue_hour' => $lowRevenueHour ? $lowRevenueHour['hour_formatted'] : null,
+                    'time_range' => $timeRange
                 ]
             ]);
         } catch (\Exception $e) {
@@ -1211,6 +1416,1266 @@ class ProductController extends Controller
     /**
      * Get dashboard stats
      */
+    /**
+     * Get 7-day sales summary
+     * 
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getSevenDaySummary()
+    {
+        try {
+            $endDate = Carbon::now();
+            $startDate = Carbon::now()->subDays(7)->startOfDay();
+            
+            // Get total revenue for the last 7 days
+            $totalRevenue = DB::table('orders')
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->where('created_at', '>=', $startDate)
+                ->where('created_at', '<=', $endDate)
+                ->sum('grand_total');
+            
+            // Get total number of orders for the last 7 days
+            $totalOrders = DB::table('orders')
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->where('created_at', '>=', $startDate)
+                ->where('created_at', '<=', $endDate)
+                ->count();
+            
+            // Temporarily disable strict mode for GROUP BY
+            DB::statement("SET SESSION sql_mode=''");
+            
+            // Get daily breakdown
+            $dailyBreakdown = DB::table('orders')
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->where('created_at', '>=', $startDate)
+                ->where('created_at', '<=', $endDate)
+                ->select(
+                    DB::raw('DATE(created_at) as date'),
+                    DB::raw('DAYNAME(created_at) as day_name'),
+                    DB::raw('COUNT(*) as order_count'),
+                    DB::raw('SUM(grand_total) as revenue'),
+                    DB::raw('AVG(grand_total) as avg_order_value')
+                )
+                ->groupBy(DB::raw('DATE(created_at), DAYNAME(created_at)'))
+                ->orderBy('date')
+                ->get();
+                
+            // We don't need to reset SQL mode here as it's done after the hourly query
+            
+            // Calculate average order value
+            $avgOrderValue = $totalOrders > 0 ? $totalRevenue / $totalOrders : 0;
+            
+            // Find peak day (highest revenue)
+            $peakDay = $dailyBreakdown->isEmpty() ? null : $dailyBreakdown->sortByDesc('revenue')->first();
+            
+            // Find busiest day (most orders)
+            $busiestDay = $dailyBreakdown->isEmpty() ? null : $dailyBreakdown->sortByDesc('order_count')->first();
+            
+            // Format daily data for peak days chart
+            $formattedDailyData = [];
+            foreach ($dailyBreakdown as $day) {
+                $formattedDailyData[] = [
+                    'day' => $day->day_name, // Renamed to match expected field name
+                    'day_name' => $day->day_name,
+                    'date' => $day->date,
+                    'order_count' => $day->order_count,
+                    'revenue' => $day->revenue,
+                    'avg_order_value' => $day->avg_order_value,
+                    'is_peak_orders' => $busiestDay && $day->date === $busiestDay->date,
+                    'is_low_orders' => $day->order_count === $dailyBreakdown->where('order_count', '>', 0)->min('order_count'),
+                    'is_peak_revenue' => $peakDay && $day->date === $peakDay->date,
+                    'is_low_revenue' => $day->revenue == $dailyBreakdown->where('revenue', '>', 0)->min('revenue')
+                ];
+            }
+            
+            // Get hourly breakdown for peak hours chart
+            // Using DB::statement to temporarily disable strict mode for this query
+            DB::statement("SET SESSION sql_mode=''");
+            
+            $hourlyBreakdown = DB::table('orders')
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->where('created_at', '>=', $startDate)
+                ->where('created_at', '<=', $endDate)
+                ->select(
+                    DB::raw('HOUR(created_at) as hour'),
+                    DB::raw('DATE_FORMAT(created_at, "%H:00") as hour_formatted'),
+                    DB::raw('COUNT(*) as order_count'),
+                    DB::raw('SUM(grand_total) as revenue'),
+                    DB::raw('AVG(grand_total) as avg_order_value')
+                )
+                ->groupBy(DB::raw('HOUR(created_at)'))
+                ->orderBy('hour')
+                ->get();
+                
+            // Reset SQL mode back to default
+            DB::statement("SET SESSION sql_mode='ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
+            
+            // Find peak and low hours
+            $peakHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->sortByDesc('revenue')->first();
+            $lowHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->where('revenue', '>', 0)->sortBy('revenue')->first();
+            $peakOrderHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->sortByDesc('order_count')->first();
+            $lowOrderHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->where('order_count', '>', 0)->sortBy('order_count')->first();
+            
+            // Format hourly data for peak hours chart
+            $formattedHourlyData = [];
+            foreach ($hourlyBreakdown as $hour) {
+                $formattedHourlyData[] = [
+                    'hour' => $hour->hour,
+                    'hour_formatted' => $hour->hour_formatted,
+                    'order_count' => $hour->order_count,
+                    'revenue' => $hour->revenue,
+                    'avg_order_value' => $hour->avg_order_value,
+                    'is_peak_orders' => $peakOrderHour && $hour->hour === $peakOrderHour->hour && $hour->order_count > 0,
+                    'is_low_orders' => $lowOrderHour && $hour->hour === $lowOrderHour->hour && $hour->order_count > 0,
+                    'is_peak_revenue' => $peakHour && $hour->hour === $peakHour->hour && $hour->revenue > 0,
+                    'is_low_revenue' => $lowHour && $hour->hour === $lowHour->hour && $hour->revenue > 0,
+                    'time_range' => '7days'
+                ];
+            }
+            
+            // Create segment analysis data
+            // Define time segments
+            $segments = [
+                'morning' => ['name' => 'Morning', 'start' => 6, 'end' => 11], // 6:00 - 11:59
+                'afternoon' => ['name' => 'Afternoon', 'start' => 12, 'end' => 17], // 12:00 - 17:59
+                'evening' => ['name' => 'Evening', 'start' => 18, 'end' => 23], // 18:00 - 23:59
+                'night' => ['name' => 'Night', 'start' => 0, 'end' => 5], // 0:00 - 5:59
+            ];
+            
+            // Group hourly data into segments
+            $segmentData = [];
+            foreach ($segments as $key => $segment) {
+                $segmentHours = $hourlyBreakdown->filter(function($hour) use ($segment) {
+                    return $hour->hour >= $segment['start'] && $hour->hour <= $segment['end'];
+                });
+                
+                $segmentOrderCount = $segmentHours->sum('order_count');
+                $segmentRevenue = $segmentHours->sum('revenue');
+                
+                $segmentData[$key] = [
+                    'name' => $segment['name'],
+                    'order_count' => $segmentOrderCount,
+                    'revenue' => $segmentRevenue,
+                    'avg_order_value' => $segmentOrderCount > 0 ? $segmentRevenue / $segmentOrderCount : 0
+                ];
+            }
+            
+            // Format segment data for frontend
+            $formattedSegments = [
+                'morning' => $segmentData['morning'],
+                'afternoon' => $segmentData['afternoon'],
+                'evening' => $segmentData['evening'],
+                'night' => $segmentData['night'],
+                'peak_hour' => $peakOrderHour ? [
+                    'hour' => $peakOrderHour->hour,
+                    'hour_formatted' => $peakOrderHour->hour_formatted,
+                    'order_count' => $peakOrderHour->order_count,
+                    'revenue' => $peakOrderHour->revenue,
+                    'label' => 'Busiest hour across all 7 days'
+                ] : null,
+                'low_hour' => $lowOrderHour ? [
+                    'hour' => $lowOrderHour->hour,
+                    'hour_formatted' => $lowOrderHour->hour_formatted,
+                    'order_count' => $lowOrderHour->order_count,
+                    'revenue' => $lowOrderHour->revenue,
+                    'label' => 'Quietest hour across all 7 days'
+                ] : null
+            ];
+            
+            // Create metrics for peak hours
+            $peakHoursMetrics = [
+                'peak_orders_hour' => $peakOrderHour ? $peakOrderHour->hour_formatted : null,
+                'peak_revenue_hour' => $peakHour ? $peakHour->hour_formatted : null,
+                'low_orders_hour' => $lowOrderHour ? $lowOrderHour->hour_formatted : null,
+                'low_revenue_hour' => $lowHour ? $lowHour->hour_formatted : null,
+                'time_range' => '7days'
+            ];
+            
+            // Create metrics for peak days
+            $peakDaysMetrics = [
+                'peak_orders_day' => $busiestDay ? $busiestDay->day_name : null,
+                'peak_revenue_day' => $peakDay ? $peakDay->day_name : null,
+                'low_orders_day' => $dailyBreakdown->where('order_count', '>', 0)->sortBy('order_count')->first() ? 
+                    $dailyBreakdown->where('order_count', '>', 0)->sortBy('order_count')->first()->day_name : null,
+                'low_revenue_day' => $dailyBreakdown->where('revenue', '>', 0)->sortBy('revenue')->first() ? 
+                    $dailyBreakdown->where('revenue', '>', 0)->sortBy('revenue')->first()->day_name : null,
+                'time_range' => '7days'
+            ];
+            
+            // Calculate performance indicators by comparing to previous period
+            $previousPeriodStart = $startDate->copy()->subDays(7);
+            $previousPeriodEnd = $endDate->copy()->subDays(7);
+            
+            // Get previous period data
+            $previousPeriodOrders = Order::whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->count();
+                
+            $previousPeriodRevenue = Order::whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->sum('grand_total');
+            
+            // Calculate percentage changes
+            $revenueChange = $previousPeriodRevenue > 0 ? 
+                (($totalRevenue - $previousPeriodRevenue) / $previousPeriodRevenue) * 100 : 
+                ($totalRevenue > 0 ? 100 : 0);
+                
+            $ordersChange = $previousPeriodOrders > 0 ? 
+                (($totalOrders - $previousPeriodOrders) / $previousPeriodOrders) * 100 : 
+                ($totalOrders > 0 ? 100 : 0);
+            
+            // Create performance indicator
+            $performanceIndicator = [
+                'revenue_change_percent' => round($revenueChange, 2),
+                'orders_change_percent' => round($ordersChange, 2),
+                'previous_period_revenue' => $previousPeriodRevenue,
+                'previous_period_orders' => $previousPeriodOrders,
+                'overall_status' => $revenueChange >= 0 ? 'positive' : 'negative'
+            ];
+            
+            
+            return response()->json([
+                'status' => 'success',
+                'data' => [
+                    'total_revenue' => $totalRevenue,
+                    'total_orders' => $totalOrders,
+                    'avg_order_value' => $avgOrderValue,
+                    'peak_day' => $peakDay,
+                    'busiest_day' => $busiestDay,
+                    'daily_breakdown' => $dailyBreakdown,
+                    'peak_days_data' => $formattedDailyData, // For peak days chart
+                    'peak_hours_data' => $formattedHourlyData, // For peak hours chart
+                    'segments' => $formattedSegments, // For segment analysis
+                    'metrics' => [
+                        'hours' => $peakHoursMetrics, // For peak hours metrics
+                        'days' => $peakDaysMetrics // For peak days metrics
+                    ],
+                    'performance_indicator' => $performanceIndicator, // Business performance indicator
+                    'date_range' => [
+                        'start' => $startDate->toDateTimeString(),
+                        'end' => $endDate->toDateTimeString()
+                    ]
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error fetching 7-day summary: ' . $e->getMessage());
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to fetch 7-day summary: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get 30-day sales summary
+     * 
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getThirtyDaySummary()
+    {
+        try {
+            $endDate = Carbon::now();
+            $startDate = Carbon::now()->subDays(30)->startOfDay();
+            
+            // Get total revenue for the last 30 days
+            $totalRevenue = DB::table('orders')
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->where('created_at', '>=', $startDate)
+                ->where('created_at', '<=', $endDate)
+                ->sum('grand_total');
+            
+            // Get total number of orders for the last 30 days
+            $totalOrders = DB::table('orders')
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->where('created_at', '>=', $startDate)
+                ->where('created_at', '<=', $endDate)
+                ->count();
+            
+            // Temporarily disable strict mode for GROUP BY
+            DB::statement("SET SESSION sql_mode=''");
+            
+            // Get daily breakdown data
+            $dailyBreakdown = DB::table('orders')
+                ->select(
+                    DB::raw('DATE(created_at) as date'),
+                    DB::raw('COUNT(*) as orders'),
+                    DB::raw('SUM(grand_total) as revenue')
+                )
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->where('created_at', '>=', $startDate)
+                ->where('created_at', '<=', $endDate)
+                ->groupBy('date')
+                ->orderBy('date', 'asc')
+                ->get();
+            
+            // Get hourly breakdown data
+            $hourlyBreakdown = DB::table('orders')
+                ->select(
+                    DB::raw('HOUR(created_at) as hour'),
+                    DB::raw('COUNT(*) as orders'),
+                    DB::raw('SUM(grand_total) as revenue')
+                )
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->where('created_at', '>=', $startDate)
+                ->where('created_at', '<=', $endDate)
+                ->groupBy('hour')
+                ->orderBy('hour', 'asc')
+                ->get();
+            
+            // Re-enable strict mode
+            DB::statement("SET SESSION sql_mode='STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION'");
+            
+            // Find peak day (highest revenue)
+            $peakDay = $dailyBreakdown->isEmpty() ? null : $dailyBreakdown->sortByDesc('revenue')->first();
+            
+            // Find busiest day (most orders)
+            $busiestDay = $dailyBreakdown->isEmpty() ? null : $dailyBreakdown->sortByDesc('orders')->first();
+            
+            // Format daily data for peak days chart
+            $formattedDailyData = [];
+            foreach ($dailyBreakdown as $day) {
+                $formattedDailyData[] = [
+                    'day' => Carbon::parse($day->date)->format('l'),
+                    'day_name' => Carbon::parse($day->date)->format('l'),
+                    'date' => $day->date,
+                    'order_count' => $day->orders,
+                    'revenue' => $day->revenue,
+                    'avg_order_value' => $day->orders > 0 ? $day->revenue / $day->orders : 0,
+                    'is_peak_orders' => $busiestDay && $day->date === $busiestDay->date,
+                    'is_low_orders' => false, // Will be set properly later
+                    'is_peak_revenue' => $peakDay && $day->date === $peakDay->date,
+                    'is_low_revenue' => false // Will be set properly later
+                ];
+            }
+            
+            // Use formatted data for peak days
+            $peakDaysData = collect($formattedDailyData);
+            
+            // Calculate low days
+            $lowDaysData = $dailyBreakdown->sortBy('revenue')->take(3)->values();
+            
+            // Find peak and low hours
+            $peakHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->sortByDesc('revenue')->first();
+            $lowHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->where('revenue', '>', 0)->sortBy('revenue')->first();
+            $peakOrderHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->sortByDesc('orders')->first();
+            $lowOrderHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->where('orders', '>', 0)->sortBy('orders')->first();
+            
+            // Format hourly data for peak hours chart
+            $formattedHourlyData = [];
+            foreach ($hourlyBreakdown as $hour) {
+                $formattedHourlyData[] = [
+                    'hour' => $hour->hour,
+                    'hour_formatted' => sprintf('%02d:00', $hour->hour),
+                    'order_count' => $hour->orders,
+                    'revenue' => $hour->revenue,
+                    'avg_order_value' => $hour->orders > 0 ? $hour->revenue / $hour->orders : 0,
+                    'is_peak_orders' => $peakOrderHour && $hour->hour === $peakOrderHour->hour && $hour->orders > 0,
+                    'is_low_orders' => $lowOrderHour && $hour->hour === $lowOrderHour->hour && $hour->orders > 0,
+                    'is_peak_revenue' => $peakHour && $hour->hour === $peakHour->hour && $hour->revenue > 0,
+                    'is_low_revenue' => $lowHour && $hour->hour === $lowHour->hour && $hour->revenue > 0,
+                    'time_range' => '30days'
+                ];
+            }
+            
+            // Use formatted data for peak hours
+            $peakHoursData = collect($formattedHourlyData);
+            
+            // Calculate average order value
+            $avgOrderValue = $totalOrders > 0 ? $totalRevenue / $totalOrders : 0;
+            
+            // Calculate segment analysis (morning, afternoon, evening, night)
+            // Define time segments
+            $segmentRanges = [
+                'morning' => ['name' => 'Morning', 'start' => 6, 'end' => 11], // 6:00 - 11:59
+                'afternoon' => ['name' => 'Afternoon', 'start' => 12, 'end' => 17], // 12:00 - 17:59
+                'evening' => ['name' => 'Evening', 'start' => 18, 'end' => 23], // 18:00 - 23:59
+                'night' => ['name' => 'Night', 'start' => 0, 'end' => 5], // 0:00 - 5:59
+            ];
+            
+            // Initialize segments with proper structure
+            $segmentData = [];
+            foreach ($segmentRanges as $key => $segment) {
+                $segmentHours = $hourlyBreakdown->filter(function($hour) use ($segment) {
+                    return $hour->hour >= $segment['start'] && $hour->hour <= $segment['end'];
+                });
+                
+                $segmentOrderCount = $segmentHours->sum('orders');
+                $segmentRevenue = $segmentHours->sum('revenue');
+                
+                $segmentData[$key] = [
+                    'name' => $segment['name'],
+                    'order_count' => $segmentOrderCount,
+                    'revenue' => $segmentRevenue,
+                    'avg_order_value' => $segmentOrderCount > 0 ? $segmentRevenue / $segmentOrderCount : 0
+                ];
+            }
+            
+            // Format segments for frontend
+            $segments = [
+                'morning' => $segmentData['morning'],
+                'afternoon' => $segmentData['afternoon'],
+                'evening' => $segmentData['evening'],
+                'night' => $segmentData['night'],
+                'peak_hour' => $peakHour ? [
+                    'hour' => $peakHour->hour,
+                    'hour_formatted' => sprintf('%02d:00', $peakHour->hour),
+                    'order_count' => $peakHour->orders,
+                    'revenue' => $peakHour->revenue,
+                    'label' => 'Busiest hour across all 30 days'
+                ] : null,
+                'low_hour' => $lowHour ? [
+                    'hour' => $lowHour->hour,
+                    'hour_formatted' => sprintf('%02d:00', $lowHour->hour),
+                    'order_count' => $lowHour->orders,
+                    'revenue' => $lowHour->revenue,
+                    'label' => 'Quietest hour across all 30 days'
+                ] : null
+            ];
+            
+            // Calculate performance indicators (compare with previous 30 days)
+            $previousStartDate = Carbon::now()->subDays(60)->startOfDay();
+            $previousEndDate = Carbon::now()->subDays(30)->endOfDay();
+            
+            $previousRevenue = DB::table('orders')
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->where('created_at', '>=', $previousStartDate)
+                ->where('created_at', '<=', $previousEndDate)
+                ->sum('grand_total');
+            
+            $previousOrders = DB::table('orders')
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->where('created_at', '>=', $previousStartDate)
+                ->where('created_at', '<=', $previousEndDate)
+                ->count();
+            
+            $revenueChangePercent = $previousRevenue > 0 ? round((($totalRevenue - $previousRevenue) / $previousRevenue) * 100, 2) : 0;
+            $ordersChangePercent = $previousOrders > 0 ? round((($totalOrders - $previousOrders) / $previousOrders) * 100, 2) : 0;
+            
+            $performanceIndicator = [
+                'revenue_change_percent' => $revenueChangePercent,
+                'orders_change_percent' => $ordersChangePercent,
+                'overall_status' => $revenueChangePercent >= 0 ? 'positive' : 'negative'
+            ];
+            
+            // Format dates in daily breakdown
+            $formattedDailyBreakdown = $dailyBreakdown->map(function ($day) {
+                return [
+                    'date' => Carbon::parse($day->date)->format('Y-m-d'),
+                    'orders' => $day->orders,
+                    'revenue' => $day->revenue
+                ];
+            });
+            
+            // Create metrics for peak hours in standardized format (matching 7-day summary)
+            $peakHoursMetrics = [
+                'peak_orders_hour' => $peakOrderHour ? 
+                    sprintf('%02d:00', $peakOrderHour->hour) : null,
+                'peak_revenue_hour' => $peakHour ? 
+                    sprintf('%02d:00', $peakHour->hour) : null,
+                'low_orders_hour' => $lowOrderHour ? 
+                    sprintf('%02d:00', $lowOrderHour->hour) : null,
+                'low_revenue_hour' => $lowHour ? 
+                    sprintf('%02d:00', $lowHour->hour) : null,
+                'time_range' => '30days'
+            ];
+            
+            // Create metrics for peak days in standardized format
+            $peakDaysMetrics = [
+                'peak_orders_day' => $busiestDay ? 
+                    Carbon::parse($busiestDay->date)->format('l') : null,
+                'peak_revenue_day' => $peakDay ? 
+                    Carbon::parse($peakDay->date)->format('l') : null,
+                'low_orders_day' => $dailyBreakdown->where('orders', '>', 0)->sortBy('orders')->first() ? 
+                    Carbon::parse($dailyBreakdown->where('orders', '>', 0)->sortBy('orders')->first()->date)->format('l') : null,
+                'low_revenue_day' => $dailyBreakdown->where('revenue', '>', 0)->sortBy('revenue')->first() ? 
+                    Carbon::parse($dailyBreakdown->where('revenue', '>', 0)->sortBy('revenue')->first()->date)->format('l') : null,
+                'time_range' => '30days'
+            ];
+            
+            // Find the single day with the lowest orders (prioritizing the earliest date if there are ties)
+            $minOrdersValue = $dailyBreakdown->where('orders', '>', 0)->min('orders');
+            $lowOrdersDays = $dailyBreakdown->where('orders', $minOrdersValue)->sortBy('date');
+            $lowOrdersDay = $lowOrdersDays->first();
+            
+            // Find the single day with the lowest revenue (prioritizing the earliest date if there are ties)
+            $minRevenueValue = $dailyBreakdown->where('revenue', '>', 0)->min('revenue');
+            $lowRevenueDays = $dailyBreakdown->where('revenue', $minRevenueValue)->sortBy('date');
+            $lowRevenueDay = $lowRevenueDays->first();
+            
+            // Update the flags for low orders and low revenue days in formattedDailyData
+            foreach ($formattedDailyData as &$day) {
+                if ($lowOrdersDay && $day['date'] === $lowOrdersDay->date) {
+                    $day['is_low_orders'] = true;
+                }
+                if ($lowRevenueDay && $day['date'] === $lowRevenueDay->date) {
+                    $day['is_low_revenue'] = true;
+                }
+            }
+            
+            // Combine metrics
+            $metrics = [
+                'hours' => $peakHoursMetrics,
+                'days' => $peakDaysMetrics
+            ];
+            
+            return response()->json([
+                'status' => 'success',
+                'data' => [
+                    'total_revenue' => $totalRevenue,
+                    'total_orders' => $totalOrders,
+                    'avg_order_value' => $avgOrderValue,
+                    'daily_breakdown' => $formattedDailyBreakdown,
+                    'hourly_breakdown' => $hourlyBreakdown,
+                    'peak_days_data' => $peakDaysData,
+                    'peak_hours_data' => $peakHoursData,
+                    'segments' => $segments,
+                    'metrics' => $metrics,
+                    'performance_indicator' => $performanceIndicator
+                ]
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('30-day summary error: ' . $e->getMessage() . '\nFile: ' . $e->getFile() . '\nLine: ' . $e->getLine() . '\nTrace: ' . $e->getTraceAsString());
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to fetch 30-day summary: ' . $e->getMessage() . ' at line ' . $e->getLine() . ' in ' . basename($e->getFile())
+            ], 500);
+        }
+    }
+    
+    /**
+     * Get 90-day sales summary
+     * 
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getNinetyDaySummary()
+    {
+        try {
+            $endDate = Carbon::now();
+            $startDate = Carbon::now()->subDays(90)->startOfDay();
+            
+            // Get total revenue for the last 90 days
+            $totalRevenue = DB::table('orders')
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->where('created_at', '>=', $startDate)
+                ->where('created_at', '<=', $endDate)
+                ->sum('grand_total');
+            
+            // Get total number of orders for the last 90 days
+            $totalOrders = DB::table('orders')
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->where('created_at', '>=', $startDate)
+                ->where('created_at', '<=', $endDate)
+                ->count();
+            
+            // Temporarily disable strict mode for GROUP BY
+            DB::statement("SET SESSION sql_mode=''");
+            
+            // Get daily breakdown
+            $dailyBreakdown = DB::table('orders')
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->where('created_at', '>=', $startDate)
+                ->where('created_at', '<=', $endDate)
+                ->select(
+                    DB::raw('DATE(created_at) as date'),
+                    DB::raw('DAYNAME(created_at) as day_name'),
+                    DB::raw('COUNT(*) as order_count'),
+                    DB::raw('SUM(grand_total) as revenue'),
+                    DB::raw('AVG(grand_total) as avg_order_value')
+                )
+                ->groupBy(DB::raw('DATE(created_at), DAYNAME(created_at)'))
+                ->orderBy('date')
+                ->get();
+                
+            // Calculate average order value
+            $avgOrderValue = $totalOrders > 0 ? $totalRevenue / $totalOrders : 0;
+            
+            // Find peak day (highest revenue)
+            $peakDay = $dailyBreakdown->isEmpty() ? null : $dailyBreakdown->sortByDesc('revenue')->first();
+            
+            // Find busiest day (most orders)
+            $busiestDay = $dailyBreakdown->isEmpty() ? null : $dailyBreakdown->sortByDesc('order_count')->first();
+            
+            // Format daily data for peak days chart
+            $formattedDailyData = [];
+            foreach ($dailyBreakdown as $day) {
+                $formattedDailyData[] = [
+                    'day' => $day->day_name, // Renamed to match expected field name
+                    'day_name' => $day->day_name,
+                    'date' => $day->date,
+                    'order_count' => $day->order_count,
+                    'revenue' => $day->revenue,
+                    'avg_order_value' => $day->avg_order_value,
+                    'is_peak_orders' => $busiestDay && $day->date === $busiestDay->date,
+                    'is_low_orders' => $day->order_count === $dailyBreakdown->where('order_count', '>', 0)->min('order_count'),
+                    'is_peak_revenue' => $peakDay && $day->date === $peakDay->date,
+                    'is_low_revenue' => $day->revenue == $dailyBreakdown->where('revenue', '>', 0)->min('revenue')
+                ];
+            }
+            
+            // Get hourly breakdown for peak hours chart
+            $hourlyBreakdown = DB::table('orders')
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->where('created_at', '>=', $startDate)
+                ->where('created_at', '<=', $endDate)
+                ->select(
+                    DB::raw('HOUR(created_at) as hour'),
+                    DB::raw('DATE_FORMAT(created_at, "%H:00") as hour_formatted'),
+                    DB::raw('COUNT(*) as order_count'),
+                    DB::raw('SUM(grand_total) as revenue'),
+                    DB::raw('AVG(grand_total) as avg_order_value')
+                )
+                ->groupBy(DB::raw('HOUR(created_at)'))
+                ->orderBy('hour')
+                ->get();
+                
+            // Reset SQL mode back to default
+            DB::statement("SET SESSION sql_mode='ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
+            
+            // Find peak and low hours
+            $peakHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->sortByDesc('revenue')->first();
+            $lowHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->where('revenue', '>', 0)->sortBy('revenue')->first();
+            $peakOrderHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->sortByDesc('order_count')->first();
+            $lowOrderHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->where('order_count', '>', 0)->sortBy('order_count')->first();
+            
+            // Format hourly data for peak hours chart
+            $formattedHourlyData = [];
+            foreach ($hourlyBreakdown as $hour) {
+                $formattedHourlyData[] = [
+                    'hour' => $hour->hour,
+                    'hour_formatted' => $hour->hour_formatted,
+                    'order_count' => $hour->order_count,
+                    'revenue' => $hour->revenue,
+                    'avg_order_value' => $hour->avg_order_value,
+                    'is_peak_orders' => $peakOrderHour && $hour->hour === $peakOrderHour->hour && $hour->order_count > 0,
+                    'is_low_orders' => $lowOrderHour && $hour->hour === $lowOrderHour->hour && $hour->order_count > 0,
+                    'is_peak_revenue' => $peakHour && $hour->hour === $peakHour->hour && $hour->revenue > 0,
+                    'is_low_revenue' => $lowHour && $hour->hour === $lowHour->hour && $hour->revenue > 0,
+                    'time_range' => '90days'
+                ];
+            }
+            
+            // Create segment analysis data
+            // Define time segments
+            $segments = [
+                'morning' => ['name' => 'Morning', 'start' => 6, 'end' => 11], // 6:00 - 11:59
+                'afternoon' => ['name' => 'Afternoon', 'start' => 12, 'end' => 17], // 12:00 - 17:59
+                'evening' => ['name' => 'Evening', 'start' => 18, 'end' => 23], // 18:00 - 23:59
+                'night' => ['name' => 'Night', 'start' => 0, 'end' => 5], // 0:00 - 5:59
+            ];
+            
+            // Group hourly data into segments
+            $segmentData = [];
+            foreach ($segments as $key => $segment) {
+                $segmentHours = $hourlyBreakdown->filter(function($hour) use ($segment) {
+                    return $hour->hour >= $segment['start'] && $hour->hour <= $segment['end'];
+                });
+                
+                $segmentOrderCount = $segmentHours->sum('order_count');
+                $segmentRevenue = $segmentHours->sum('revenue');
+                
+                $segmentData[$key] = [
+                    'name' => $segment['name'],
+                    'order_count' => $segmentOrderCount,
+                    'revenue' => $segmentRevenue,
+                    'avg_order_value' => $segmentOrderCount > 0 ? $segmentRevenue / $segmentOrderCount : 0
+                ];
+            }
+            
+            // Format segment data for frontend
+            $formattedSegments = [
+                'morning' => $segmentData['morning'],
+                'afternoon' => $segmentData['afternoon'],
+                'evening' => $segmentData['evening'],
+                'night' => $segmentData['night'],
+                'peak_hour' => $peakOrderHour ? [
+                    'hour' => $peakOrderHour->hour,
+                    'hour_formatted' => $peakOrderHour->hour_formatted,
+                    'order_count' => $peakOrderHour->order_count,
+                    'revenue' => $peakOrderHour->revenue,
+                    'label' => 'Busiest hour across all 90 days'
+                ] : null,
+                'low_hour' => $lowOrderHour ? [
+                    'hour' => $lowOrderHour->hour,
+                    'hour_formatted' => $lowOrderHour->hour_formatted,
+                    'order_count' => $lowOrderHour->order_count,
+                    'revenue' => $lowOrderHour->revenue,
+                    'label' => 'Quietest hour across all 90 days'
+                ] : null
+            ];
+            
+            // Create metrics for peak hours
+            $peakHoursMetrics = [
+                'peak_orders_hour' => $peakOrderHour ? $peakOrderHour->hour_formatted : null,
+                'peak_revenue_hour' => $peakHour ? $peakHour->hour_formatted : null,
+                'low_orders_hour' => $lowOrderHour ? $lowOrderHour->hour_formatted : null,
+                'low_revenue_hour' => $lowHour ? $lowHour->hour_formatted : null,
+                'time_range' => '90days'
+            ];
+            
+            // Create metrics for peak days
+            $peakDaysMetrics = [
+                'peak_orders_day' => $busiestDay ? $busiestDay->day_name : null,
+                'peak_revenue_day' => $peakDay ? $peakDay->day_name : null,
+                'low_orders_day' => $dailyBreakdown->where('order_count', '>', 0)->sortBy('order_count')->first() ? 
+                    $dailyBreakdown->where('order_count', '>', 0)->sortBy('order_count')->first()->day_name : null,
+                'low_revenue_day' => $dailyBreakdown->where('revenue', '>', 0)->sortBy('revenue')->first() ? 
+                    $dailyBreakdown->where('revenue', '>', 0)->sortBy('revenue')->first()->day_name : null,
+                'time_range' => '90days'
+            ];
+            
+            // Calculate performance indicators by comparing to previous 90 days
+            $previousPeriodStart = $startDate->copy()->subDays(90);
+            $previousPeriodEnd = $endDate->copy()->subDays(90);
+            
+            // Get previous period data
+            $previousPeriodOrders = DB::table('orders')
+                ->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->count();
+                
+            $previousPeriodRevenue = DB::table('orders')
+                ->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->sum('grand_total');
+            
+            // Calculate percentage changes
+            $revenueChange = $previousPeriodRevenue > 0 ? 
+                (($totalRevenue - $previousPeriodRevenue) / $previousPeriodRevenue) * 100 : 
+                ($totalRevenue > 0 ? 100 : 0);
+                
+            $ordersChange = $previousPeriodOrders > 0 ? 
+                (($totalOrders - $previousPeriodOrders) / $previousPeriodOrders) * 100 : 
+                ($totalOrders > 0 ? 100 : 0);
+            
+            // Create performance indicator
+            $performanceIndicator = [
+                'revenue_change_percent' => round($revenueChange, 2),
+                'orders_change_percent' => round($ordersChange, 2),
+                'previous_period_revenue' => $previousPeriodRevenue,
+                'previous_period_orders' => $previousPeriodOrders,
+                'overall_status' => $revenueChange >= 0 ? 'positive' : 'negative'
+            ];
+            
+            return response()->json([
+                'status' => 'success',
+                'data' => [
+                    'total_revenue' => $totalRevenue,
+                    'total_orders' => $totalOrders,
+                    'avg_order_value' => $avgOrderValue,
+                    'peak_day' => $peakDay,
+                    'busiest_day' => $busiestDay,
+                    'daily_breakdown' => $dailyBreakdown,
+                    'peak_days_data' => $formattedDailyData, // For peak days chart
+                    'peak_hours_data' => $formattedHourlyData, // For peak hours chart
+                    'segments' => $formattedSegments, // For segment analysis
+                    'metrics' => [
+                        'hours' => $peakHoursMetrics, // For peak hours metrics
+                        'days' => $peakDaysMetrics // For peak days metrics
+                    ],
+                    'performance_indicator' => $performanceIndicator, // Business performance indicator
+                    'date_range' => [
+                        'start' => $startDate->toDateTimeString(),
+                        'end' => $endDate->toDateTimeString()
+                    ]
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error fetching 90-day summary: ' . $e->getMessage());
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to fetch 90-day summary: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get all-time sales summary
+     * 
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getAllTimeSummary()
+    {
+        try {
+            $endDate = Carbon::now();
+            // Get the date of the first order or use a very old date if no orders exist
+            $firstOrder = DB::table('orders')->orderBy('created_at', 'asc')->first();
+            $startDate = $firstOrder ? Carbon::parse($firstOrder->created_at) : Carbon::now()->subYears(10);
+            
+            // Get total revenue for all time (with date range filter for consistency)
+            $totalRevenue = DB::table('orders')
+                ->whereBetween('created_at', [$startDate, $endDate])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->sum('grand_total');
+            
+            // Get total number of orders for all time (with date range filter for consistency)
+            $totalOrders = DB::table('orders')
+                ->whereBetween('created_at', [$startDate, $endDate])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->count();
+            
+            // Log the exact query details for debugging
+            \Log::info('All-Time Summary Debug:', [
+                'date_range' => [
+                    'start' => $startDate->toDateTimeString(),
+                    'end' => $endDate->toDateTimeString()
+                ],
+                'total_orders_with_filter' => $totalOrders,
+                'total_revenue_with_filter' => $totalRevenue,
+                'total_orders_without_payment_filter' => DB::table('orders')
+                    ->whereBetween('created_at', [$startDate, $endDate])
+                    ->where('status', '!=', 'cancelled')
+                    ->count(),
+                'total_revenue_without_payment_filter' => DB::table('orders')
+                    ->whereBetween('created_at', [$startDate, $endDate])
+                    ->where('status', '!=', 'cancelled')
+                    ->sum('grand_total')
+            ]);
+            
+            // Temporarily disable strict mode for GROUP BY
+            DB::statement("SET SESSION sql_mode=''");
+            
+            // Get monthly breakdown instead of daily (since all-time daily would be too much data)
+            $monthlyBreakdown = DB::table('orders')
+                ->whereBetween('created_at', [$startDate, $endDate])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->select(
+                    DB::raw('DATE_FORMAT(created_at, "%Y-%m") as month'),
+                    DB::raw('MONTHNAME(created_at) as month_name'),
+                    DB::raw('YEAR(created_at) as year'),
+                    DB::raw('COUNT(*) as order_count'),
+                    DB::raw('SUM(grand_total) as revenue'),
+                    DB::raw('AVG(grand_total) as avg_order_value')
+                )
+                ->groupBy(DB::raw('DATE_FORMAT(created_at, "%Y-%m"), MONTHNAME(created_at), YEAR(created_at)'))
+                ->orderBy('month')
+                ->get();
+                
+            // Calculate average order value
+            $avgOrderValue = $totalOrders > 0 ? $totalRevenue / $totalOrders : 0;
+            
+            // Find peak month (highest revenue)
+            $peakMonth = $monthlyBreakdown->isEmpty() ? null : $monthlyBreakdown->sortByDesc('revenue')->first();
+            
+            // Find busiest month (most orders)
+            $busiestMonth = $monthlyBreakdown->isEmpty() ? null : $monthlyBreakdown->sortByDesc('order_count')->first();
+            
+            // Format monthly data for charts
+            $formattedMonthlyData = [];
+            foreach ($monthlyBreakdown as $month) {
+                $formattedMonthlyData[] = [
+                    'month' => $month->month_name . ' ' . $month->year,
+                    'month_name' => $month->month_name,
+                    'year' => $month->year,
+                    'date' => $month->month,
+                    'order_count' => $month->order_count,
+                    'revenue' => $month->revenue,
+                    'avg_order_value' => $month->avg_order_value,
+                    'is_peak_orders' => $busiestMonth && $month->month === $busiestMonth->month,
+                    'is_low_orders' => $month->order_count === $monthlyBreakdown->where('order_count', '>', 0)->min('order_count'),
+                    'is_peak_revenue' => $peakMonth && $month->month === $peakMonth->month,
+                    'is_low_revenue' => $month->revenue == $monthlyBreakdown->where('revenue', '>', 0)->min('revenue')
+                ];
+            }
+            
+            // Get hourly breakdown for all time
+            $hourlyBreakdown = DB::table('orders')
+                ->whereBetween('created_at', [$startDate, $endDate])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->select(
+                    DB::raw('HOUR(created_at) as hour'),
+                    DB::raw('CASE 
+                        WHEN HOUR(created_at) = 0 THEN "12 AM"
+                        WHEN HOUR(created_at) < 12 THEN CONCAT(HOUR(created_at), " AM")
+                        WHEN HOUR(created_at) = 12 THEN "12 PM"
+                        ELSE CONCAT(HOUR(created_at) - 12, " PM")
+                    END as hour_formatted'),
+                    DB::raw('COUNT(*) as order_count'),
+                    DB::raw('SUM(grand_total) as revenue'),
+                    DB::raw('AVG(grand_total) as avg_order_value')
+                )
+                ->groupBy(DB::raw('HOUR(created_at)'))
+                ->orderBy('hour')
+                ->get();
+            
+            // Find peak hour (highest revenue)
+            $peakHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->sortByDesc('revenue')->first();
+            
+            // Find busiest hour (most orders)
+            $peakOrderHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->sortByDesc('order_count')->first();
+            
+            // Find lowest revenue hour
+            $lowHour = $hourlyBreakdown->where('revenue', '>', 0)->sortBy('revenue')->first();
+            
+            // Find quietest hour
+            $lowOrderHour = $hourlyBreakdown->where('order_count', '>', 0)->sortBy('order_count')->first();
+            
+            // Format hourly data for charts
+            $formattedHourlyData = [];
+            foreach ($hourlyBreakdown as $hour) {
+                $formattedHourlyData[] = [
+                    'hour' => $hour->hour,
+                    'hour_formatted' => $hour->hour_formatted,
+                    'order_count' => $hour->order_count,
+                    'revenue' => $hour->revenue,
+                    'avg_order_value' => $hour->avg_order_value,
+                    'is_peak_orders' => $peakOrderHour && $hour->hour === $peakOrderHour->hour && $hour->order_count > 0,
+                    'is_low_orders' => $lowOrderHour && $hour->hour === $lowOrderHour->hour && $hour->order_count > 0,
+                    'is_peak_revenue' => $peakHour && $hour->hour === $peakHour->hour && $hour->revenue > 0,
+                    'is_low_revenue' => $lowHour && $hour->hour === $lowHour->hour && $hour->revenue > 0,
+                    'time_range' => 'alltime'
+                ];
+            }
+            
+            // Create segment analysis data
+            // Define time segments
+            $segments = [
+                'morning' => ['name' => 'Morning', 'start' => 6, 'end' => 11], // 6:00 - 11:59
+                'afternoon' => ['name' => 'Afternoon', 'start' => 12, 'end' => 17], // 12:00 - 17:59
+                'evening' => ['name' => 'Evening', 'start' => 18, 'end' => 23], // 18:00 - 23:59
+                'night' => ['name' => 'Night', 'start' => 0, 'end' => 5], // 0:00 - 5:59
+            ];
+            
+            // Group hourly data into segments
+            $segmentData = [];
+            foreach ($segments as $key => $segment) {
+                $segmentHours = $hourlyBreakdown->filter(function($hour) use ($segment) {
+                    return $hour->hour >= $segment['start'] && $hour->hour <= $segment['end'];
+                });
+                
+                $segmentOrderCount = $segmentHours->sum('order_count');
+                $segmentRevenue = $segmentHours->sum('revenue');
+                
+                $segmentData[$key] = [
+                    'name' => $segment['name'],
+                    'order_count' => $segmentOrderCount,
+                    'revenue' => $segmentRevenue,
+                    'avg_order_value' => $segmentOrderCount > 0 ? $segmentRevenue / $segmentOrderCount : 0
+                ];
+            }
+            
+            // Format segment data for frontend
+            $formattedSegments = [
+                'morning' => $segmentData['morning'],
+                'afternoon' => $segmentData['afternoon'],
+                'evening' => $segmentData['evening'],
+                'night' => $segmentData['night'],
+                'peak_hour' => $peakOrderHour ? [
+                    'hour' => $peakOrderHour->hour,
+                    'hour_formatted' => $peakOrderHour->hour_formatted,
+                    'order_count' => $peakOrderHour->order_count,
+                    'revenue' => $peakOrderHour->revenue,
+                    'label' => 'Busiest hour of all time'
+                ] : null,
+                'low_hour' => $lowOrderHour ? [
+                    'hour' => $lowOrderHour->hour,
+                    'hour_formatted' => $lowOrderHour->hour_formatted,
+                    'order_count' => $lowOrderHour->order_count,
+                    'revenue' => $lowOrderHour->revenue,
+                    'label' => 'Quietest hour of all time'
+                ] : null
+            ];
+            
+            // Create metrics for peak hours
+            $peakHoursMetrics = [
+                'peak_orders_hour' => $peakOrderHour ? $peakOrderHour->hour_formatted : null,
+                'peak_revenue_hour' => $peakHour ? $peakHour->hour_formatted : null,
+                'low_orders_hour' => $lowOrderHour ? $lowOrderHour->hour_formatted : null,
+                'low_revenue_hour' => $lowHour ? $lowHour->hour_formatted : null,
+                'time_range' => 'alltime'
+            ];
+            
+            // Create metrics for peak months
+            $peakMonthsMetrics = [
+                'peak_orders_month' => $busiestMonth ? $busiestMonth->month_name . ' ' . $busiestMonth->year : null,
+                'peak_revenue_month' => $peakMonth ? $peakMonth->month_name . ' ' . $peakMonth->year : null,
+                'low_orders_month' => $monthlyBreakdown->where('order_count', '>', 0)->sortBy('order_count')->first() ? 
+                    $monthlyBreakdown->where('order_count', '>', 0)->sortBy('order_count')->first()->month_name . ' ' . 
+                    $monthlyBreakdown->where('order_count', '>', 0)->sortBy('order_count')->first()->year : null,
+                'low_revenue_month' => $monthlyBreakdown->where('revenue', '>', 0)->sortBy('revenue')->first() ? 
+                    $monthlyBreakdown->where('revenue', '>', 0)->sortBy('revenue')->first()->month_name . ' ' . 
+                    $monthlyBreakdown->where('revenue', '>', 0)->sortBy('revenue')->first()->year : null,
+                'time_range' => 'alltime'
+            ];
+            
+            // Calculate year-over-year growth if possible
+            $currentYear = Carbon::now()->year;
+            $lastYear = $currentYear - 1;
+            
+            // Current year data (with date range filter for consistency)
+            $currentYearStart = max($startDate, Carbon::createFromDate($currentYear, 1, 1)->startOfDay());
+            $currentYearEnd = min($endDate, Carbon::createFromDate($currentYear, 12, 31)->endOfDay());
+            
+            $currentYearRevenue = DB::table('orders')
+                ->whereBetween('created_at', [$currentYearStart, $currentYearEnd])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->sum('grand_total');
+                
+            $currentYearOrders = DB::table('orders')
+                ->whereBetween('created_at', [$currentYearStart, $currentYearEnd])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->count();
+                
+            // Last year data (with date range filter for consistency)
+            $lastYearStart = max($startDate, Carbon::createFromDate($lastYear, 1, 1)->startOfDay());
+            $lastYearEnd = min($endDate, Carbon::createFromDate($lastYear, 12, 31)->endOfDay());
+            
+            $lastYearRevenue = DB::table('orders')
+                ->whereBetween('created_at', [$lastYearStart, $lastYearEnd])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->sum('grand_total');
+                
+            $lastYearOrders = DB::table('orders')
+                ->whereBetween('created_at', [$lastYearStart, $lastYearEnd])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->count();
+            
+            // Calculate percentage changes
+            $revenueChange = $lastYearRevenue > 0 ? 
+                (($currentYearRevenue - $lastYearRevenue) / $lastYearRevenue) * 100 : 
+                ($currentYearRevenue > 0 ? 100 : 0);
+                
+            $ordersChange = $lastYearOrders > 0 ? 
+                (($currentYearOrders - $lastYearOrders) / $lastYearOrders) * 100 : 
+                ($currentYearOrders > 0 ? 100 : 0);
+            
+            // Create performance indicator
+            $performanceIndicator = [
+                'revenue_change_percent' => round($revenueChange, 2),
+                'orders_change_percent' => round($ordersChange, 2),
+                'previous_period_revenue' => $lastYearRevenue,
+                'previous_period_orders' => $lastYearOrders,
+                'overall_status' => $revenueChange >= 0 ? 'positive' : 'negative',
+                'comparison_label' => 'Year-over-year growth (' . $lastYear . ' vs ' . $currentYear . ')'
+            ];
+            
+            return response()->json([
+                'status' => 'success',
+                'data' => [
+                    'total_revenue' => $totalRevenue,
+                    'total_orders' => $totalOrders,
+                    'avg_order_value' => $avgOrderValue,
+                    'peak_month' => $peakMonth,
+                    'busiest_month' => $busiestMonth,
+                    'monthly_breakdown' => $monthlyBreakdown,
+                    'peak_months_data' => $formattedMonthlyData, // For peak months chart
+                    'peak_hours_data' => $formattedHourlyData, // For peak hours chart
+                    'segments' => $formattedSegments, // For segment analysis
+                    'metrics' => [
+                        'hours' => $peakHoursMetrics, // For peak hours metrics
+                        'months' => $peakMonthsMetrics // For peak months metrics
+                    ],
+                    'performance_indicator' => $performanceIndicator, // Business performance indicator
+                    'date_range' => [
+                        'start' => $startDate->toDateTimeString(),
+                        'end' => $endDate->toDateTimeString()
+                    ]
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error fetching all-time summary: ' . $e->getMessage());
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to fetch all-time summary: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Get 24-hour summary for dashboard
+     */
+    public function getTwentyFourHourSummary(Request $request)
+    {
+        try {
+            // Set time period - last 24 hours
+            $endDate = Carbon::now();
+            $startDate = Carbon::now()->subHours(24);
+            
+            // Get total revenue and orders for the period
+            $totalRevenue = Order::whereBetween('created_at', [$startDate, $endDate])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->sum('grand_total');
+                
+            $totalOrders = Order::whereBetween('created_at', [$startDate, $endDate])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->count();
+            
+            // Calculate average order value
+            $avgOrderValue = $totalOrders > 0 ? $totalRevenue / $totalOrders : 0;
+            
+            // Get hourly breakdown
+            // Temporarily disable strict mode for group by
+            DB::statement("SET SESSION sql_mode=''");
+            
+            $hourlyBreakdown = Order::whereBetween('created_at', [$startDate, $endDate])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->select(
+                    DB::raw('HOUR(created_at) as hour'),
+                    DB::raw('COUNT(*) as order_count'),
+                    DB::raw('SUM(grand_total) as revenue'),
+                    DB::raw('AVG(grand_total) as avg_order_value')
+                )
+                ->groupBy(DB::raw('HOUR(created_at)'))
+                ->orderBy('hour')
+                ->get();
+            
+            // Re-enable strict mode
+            DB::statement("SET SESSION sql_mode='ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION'");
+            
+            // Find peak hour (highest revenue)
+            $peakHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->sortByDesc('revenue')->first();
+            
+            // Find busiest hour (most orders)
+            $busiestHour = $hourlyBreakdown->isEmpty() ? null : $hourlyBreakdown->sortByDesc('order_count')->first();
+            
+            // Find low hour (lowest revenue with at least one order)
+            $lowHour = $hourlyBreakdown->where('order_count', '>', 0)->sortBy('revenue')->first();
+            
+            // Find quietest hour (fewest orders but at least one)
+            $quietestHour = $hourlyBreakdown->where('order_count', '>', 0)->sortBy('order_count')->first();
+            
+            // Format hourly data for the chart
+            $formattedHourlyData = [];
+            foreach ($hourlyBreakdown as $hour) {
+                $hourFormatted = sprintf('%02d:00', $hour->hour);
+                $formattedHourlyData[] = [
+                    'hour' => $hour->hour,
+                    'hour_formatted' => $hourFormatted,
+                    'order_count' => $hour->order_count,
+                    'revenue' => $hour->revenue,
+                    'avg_order_value' => $hour->avg_order_value,
+                    'is_peak_revenue' => $peakHour && $hour->hour == $peakHour->hour,
+                    'is_peak_orders' => $busiestHour && $hour->hour == $busiestHour->hour,
+                    'is_low_revenue' => $lowHour && $hour->hour == $lowHour->hour,
+                    'is_low_orders' => $quietestHour && $hour->hour == $quietestHour->hour
+                ];
+            }
+            
+            // Create metrics for peak hours
+            $peakHoursMetrics = [
+                'peak_orders_hour' => $busiestHour ? sprintf('%02d:00', $busiestHour->hour) : null,
+                'peak_revenue_hour' => $peakHour ? sprintf('%02d:00', $peakHour->hour) : null,
+                'low_orders_hour' => $quietestHour ? sprintf('%02d:00', $quietestHour->hour) : null,
+                'low_revenue_hour' => $lowHour ? sprintf('%02d:00', $lowHour->hour) : null,
+                'time_range' => '24hours'
+            ];
+            
+            // Create time segment analysis (morning, afternoon, evening, night)
+            $segments = [
+                'morning' => ['start' => 6, 'end' => 11, 'name' => 'Morning', 'order_count' => 0, 'revenue' => 0],
+                'afternoon' => ['start' => 12, 'end' => 17, 'name' => 'Afternoon', 'order_count' => 0, 'revenue' => 0],
+                'evening' => ['start' => 18, 'end' => 21, 'name' => 'Evening', 'order_count' => 0, 'revenue' => 0],
+                'night' => ['start' => 22, 'end' => 5, 'name' => 'Night', 'order_count' => 0, 'revenue' => 0]
+            ];
+            
+            // Populate segment data
+            foreach ($hourlyBreakdown as $hourData) {
+                $hourInt = (int)$hourData->hour;
+                
+                if ($hourInt >= 6 && $hourInt <= 11) {
+                    $segments['morning']['order_count'] += $hourData->order_count;
+                    $segments['morning']['revenue'] += $hourData->revenue;
+                } else if ($hourInt >= 12 && $hourInt <= 17) {
+                    $segments['afternoon']['order_count'] += $hourData->order_count;
+                    $segments['afternoon']['revenue'] += $hourData->revenue;
+                } else if ($hourInt >= 18 && $hourInt <= 21) {
+                    $segments['evening']['order_count'] += $hourData->order_count;
+                    $segments['evening']['revenue'] += $hourData->revenue;
+                } else {
+                    $segments['night']['order_count'] += $hourData->order_count;
+                    $segments['night']['revenue'] += $hourData->revenue;
+                }
+            }
+            
+            // Calculate performance indicators by comparing to previous period
+            $previousPeriodStart = $startDate->copy()->subHours(24);
+            $previousPeriodEnd = $endDate->copy()->subHours(24);
+            
+            // Get previous period data
+            $previousPeriodOrders = Order::whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->count();
+                
+            $previousPeriodRevenue = Order::whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd])
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->sum('grand_total');
+            
+            // Calculate percentage changes
+            $revenueChange = $previousPeriodRevenue > 0 ? 
+                (($totalRevenue - $previousPeriodRevenue) / $previousPeriodRevenue) * 100 : 
+                ($totalRevenue > 0 ? 100 : 0);
+                
+            $ordersChange = $previousPeriodOrders > 0 ? 
+                (($totalOrders - $previousPeriodOrders) / $previousPeriodOrders) * 100 : 
+                ($totalOrders > 0 ? 100 : 0);
+            
+            // Create performance indicator
+            $performanceIndicator = [
+                'revenue_change_percent' => round($revenueChange, 2),
+                'orders_change_percent' => round($ordersChange, 2),
+                'previous_period_revenue' => $previousPeriodRevenue,
+                'previous_period_orders' => $previousPeriodOrders,
+                'overall_status' => $revenueChange >= 0 ? 'positive' : 'negative'
+            ];
+            
+            return response()->json([
+                'status' => 'success',
+                'data' => [
+                    'total_revenue' => $totalRevenue,
+                    'total_orders' => $totalOrders,
+                    'avg_order_value' => $avgOrderValue,
+                    'hourly_breakdown' => $formattedHourlyData,
+                    'metrics' => [
+                        'hours' => $peakHoursMetrics
+                    ],
+                    'segments' => $segments,
+                    'performance_indicator' => $performanceIndicator,
+                    'date_range' => [
+                        'start' => $startDate->toDateTimeString(),
+                        'end' => $endDate->toDateTimeString()
+                    ]
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error fetching 24-hour summary: ' . $e->getMessage());
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to fetch 24-hour summary: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
     public function getDashboardStats()
     {
         try {

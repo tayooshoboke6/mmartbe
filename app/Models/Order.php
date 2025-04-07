@@ -37,6 +37,8 @@ class Order extends Model
         'shipping_zip_code',
         'shipping_phone',
         'pickup_location_id',
+        'expired_at',
+        'expiration_notified_at',
     ];
 
     /**
@@ -62,6 +64,7 @@ class Order extends Model
     const STATUS_COMPLETED = 'completed';
     const STATUS_CANCELLED = 'cancelled';
     const STATUS_REFUNDED = 'refunded';
+    const STATUS_EXPIRED = 'expired';
 
     /**
      * The payment statuses.

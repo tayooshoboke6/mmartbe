@@ -271,10 +271,24 @@ Route::middleware(['auth:sanctum'])->prefix('admin')->group(function () {
     
     // Dashboard routes
     Route::prefix('dashboard')->group(function () {
-        Route::get('/stats', [ProductController::class, 'getDashboardStats']);
+        Route::get('/stats', [DashboardController::class, 'getStats']);
+        Route::get('/order-stats', [DashboardController::class, 'getOrderStats']);
+        Route::get('/hourly-data', [DashboardController::class, 'getHourlyData']);
+        Route::get('/product-stats', [ProductController::class, 'getDashboardStats']);
+        Route::get('/seven-day-summary', [ProductController::class, 'getSevenDaySummary']);
+        Route::get('/twenty-four-hour-summary', [ProductController::class, 'getTwentyFourHourSummary']);
+        Route::get('/thirty-day-summary', [ProductController::class, 'getThirtyDaySummary']);
+        Route::get('/ninety-day-summary', [ProductController::class, 'getNinetyDaySummary']);
+        Route::get('/all-time-summary', [ProductController::class, 'getAllTimeSummary']);
         Route::get('/revenue', [ProductController::class, 'getRevenueData']);
         Route::get('/peak-days', [ProductController::class, 'getPeakDays']);
         Route::get('/peak-hours', [ProductController::class, 'getPeakHours']);
+    });
+    
+    // Expired Orders Management
+    Route::prefix('expired-orders')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Admin\ExpiredOrdersController::class, 'index']);
+        Route::get('/analytics', [\App\Http\Controllers\Admin\ExpiredOrdersController::class, 'getAnalytics']);
     });
     
     // Settings Management
