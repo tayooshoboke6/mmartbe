@@ -232,28 +232,64 @@ class PaystackController extends Controller
             }
             
             // Update order status
-            $order = Order::find($orderId);
-
-            if (!$order) {
-                // Try to find the order by reference
-                $order = Order::where('payment_reference', $reference)->first();
-                
-                if (!$order) {
-                    Log::error('Order not found for Paystack payment', [
-                        'order_id' => $orderId,
-                        'reference' => $reference,
-                        'transaction_data' => $transactionData
-                    ]);
-                    return response()->json([
-                        'status' => 'error',
-                        'message' => 'Order not found'
-                    ], 404);
-                } else {
-                    Log::info('Order found by payment reference instead of ID', [
-                        'order_id' => $order->id,
-                        'reference' => $reference
+            $order = null;
+            
+            // Try to find the order by ID first
+            if ($orderId && is_numeric($orderId)) {
+                $order = Order::find($orderId);
+                if ($order) {
+                    Log::info('Order found by ID', [
+                        'order_id' => $orderId
                     ]);
                 }
+            }
+            
+            // If order not found by ID, try to find by order_number
+            if (!$order && $orderId) {
+                $order = Order::where('order_number', $orderId)->first();
+                if ($order) {
+                    Log::info('Order found by order_number', [
+                        'order_number' => $orderId,
+                        'order_id' => $order->id
+                    ]);
+                }
+            }
+            
+            // If still not found, try to find by payment reference
+            if (!$order) {
+                $order = Order::where('payment_reference', $reference)->first();
+                if ($order) {
+                    Log::info('Order found by payment reference', [
+                        'reference' => $reference,
+                        'order_id' => $order->id
+                    ]);
+                }
+            }
+            
+            // If order still not found, check metadata for order_number
+            if (!$order && isset($metadata['order_number'])) {
+                $orderNumber = $metadata['order_number'];
+                $order = Order::where('order_number', $orderNumber)->first();
+                if ($order) {
+                    Log::info('Order found by order_number from metadata', [
+                        'order_number' => $orderNumber,
+                        'order_id' => $order->id
+                    ]);
+                }
+            }
+            
+            // If order still not found, return error
+            if (!$order) {
+                Log::error('Order not found for Paystack payment', [
+                    'order_id' => $orderId,
+                    'metadata' => $metadata,
+                    'reference' => $reference,
+                    'transaction_data' => $transactionData
+                ]);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Order not found'
+                ], 404);
             }
 
             // Update order status
@@ -261,6 +297,13 @@ class PaystackController extends Controller
             $order->payment_status = 'paid';
             $order->payment_reference = $reference;
             $order->save();
+            
+            // Cart will be cleared in the frontend after successful payment verification
+            Log::info('Cart will be cleared in frontend after Paystack payment verification', [
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'payment_reference' => $reference
+            ]);
 
             // Create payment record - ensure amount is converted from kobo to naira
             Payment::create([

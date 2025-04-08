@@ -84,6 +84,9 @@ Route::get('/payment/callback', [PaymentController::class, 'handleCallback'])->n
 Route::get('/payments/callback/{status}', [PaymentController::class, 'handleCallback'])->name('payment.callback.status');
 Route::get('/payment/callback/{status}', [PaymentController::class, 'handleCallback'])->name('payment.callback.alt.status');
 
+// Clear cart on payment callback (must be public)
+Route::post('/payments/clear-cart', [CartController::class, 'clearCartOnPaymentCallback']);
+
 // Products & Categories (Public)
 Route::get('/products', [ProductController::class, 'index']);
 Route::get('/products/{product}', [ProductController::class, 'show']);
@@ -227,8 +230,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/payments/methods', [PaymentController::class, 'getPaymentMethods']);
     Route::post('/payments/process', [PaymentController::class, 'processPayment']);
     Route::post('/orders/{order}/payment', [PaymentController::class, 'processPayment']);
+    Route::post('/orders/{order}/payment-method', [PaymentController::class, 'updatePaymentMethod']);
     Route::get('/payments/{payment}/verify', [PaymentController::class, 'verifyPayment']);
     Route::get('/payments/flutterwave/verify/{transactionId}', [PaymentController::class, 'verifyTransaction']);
+    
+    // Payment gateway initialization
+    Route::post('/payments/paystack/initialize', [PaymentController::class, 'initializePaystackPayment']);
+    Route::post('/payments/flutterwave/initialize', [PaymentController::class, 'initializeFlutterwavePayment']);
 
     // Store pickup details (only after payment)
     Route::get('/orders/{order}/pickup-details', [OrderController::class, 'pickupDetails']);

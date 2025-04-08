@@ -5,6 +5,7 @@ namespace App\Console;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
 use App\Console\Commands\ExpireUnpaidOrders;
+use App\Console\Commands\CleanupSeededOrders;
 
 class Kernel extends ConsoleKernel
 {
@@ -15,6 +16,7 @@ class Kernel extends ConsoleKernel
      */
     protected $commands = [
         ExpireUnpaidOrders::class,
+        
     ];
 
     /**
@@ -22,9 +24,9 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule): void
     {
-        // Run the order expiration command daily at midnight
-        $schedule->command('orders:expire-unpaid')
-            ->daily()
+        // Run the order expiration command every 10 minutes to check for orders older than 30 minutes
+        $schedule->command('orders:expire-unpaid --hours=0.5')
+            ->everyTenMinutes()
             ->withoutOverlapping()
             ->appendOutputTo(storage_path('logs/order-expiration.log'));
     }

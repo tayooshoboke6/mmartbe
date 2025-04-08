@@ -9,6 +9,7 @@ use App\Models\Product;
 use App\Models\Coupon;
 use App\Models\Location;
 use App\Models\StoreAddress;
+use App\Models\Setting;
 use App\Services\DeliveryFeeService;
 use App\Services\NotificationService;
 use Illuminate\Http\Request;
@@ -46,8 +47,19 @@ class OrderController extends Controller
                 return $q->where('status', $request->status);
             });
 
+        $perPage = $request->per_page ?? 10; // Default to 10 items per page
+        
         $orders = $query->orderBy('created_at', 'desc')
-            ->paginate($request->per_page ?? 10);
+            ->paginate($perPage);
+            
+        // Debug information
+        \Log::info('Orders pagination', [
+            'total' => $orders->total(),
+            'per_page' => $orders->perPage(),
+            'current_page' => $orders->currentPage(),
+            'last_page' => $orders->lastPage(),
+            'count' => count($orders->items())
+        ]);
 
         return response()->json($orders);
     }
@@ -237,8 +249,13 @@ class OrderController extends Controller
                 }
             }
             
-            // Clear cart
-            $user->cartItems()->delete();
+            // Cart will be cleared in the frontend after successful payment
+            // We don't clear the cart here anymore to ensure items are preserved if payment fails
+            \Log::info('Cart will be cleared in frontend after payment verification', [
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'payment_method' => $request->payment_method
+            ]);
             
             // Send order confirmation email for all orders
             $emailSent = false;
@@ -314,7 +331,16 @@ class OrderController extends Controller
      */
     private function calculateTax($subtotal)
     {
-        $taxRate = 8; // Same 8% as frontend
+        // Get tax rate from settings instead of hardcoding
+        $taxRate = Setting::getValue('tax_rate', 7.5); // Default to 7.5% if setting not found
+        
+        // Log the tax rate being used for debugging
+        \Illuminate\Support\Facades\Log::info('Tax calculation', [
+            'tax_rate' => $taxRate,
+            'subtotal' => $subtotal,
+            'tax_amount' => $subtotal * ($taxRate / 100)
+        ]);
+        
         return $subtotal * ($taxRate / 100);
     }
 
