@@ -57,7 +57,10 @@ class OrderController extends Controller
                 $sortBy = 'created_at';
             }
             
-            $query->orderBy($sortBy, $sortOrder);
+            // Always add a secondary sort by ID to ensure consistent ordering
+            // and to make sure new orders with the same timestamp are properly ordered
+            $query->orderBy($sortBy, $sortOrder)
+                  ->orderBy('id', $sortOrder);
             
             // Paginate results
             $perPage = $request->input('per_page', 10);

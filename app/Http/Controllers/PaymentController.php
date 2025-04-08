@@ -27,15 +27,66 @@ class PaymentController extends Controller
             // Log the start of payment processing
             Log::info('Starting payment processing', [
                 'payment_method' => $request->payment_method,
-                'request_data' => $request->except(['card_number', 'cvv', 'expiry_month', 'expiry_year'])
+                'request_data' => $request->except(['card_number', 'cvv', 'expiry_month', 'expiry_year']),
+                'action' => $request->action
             ]);
 
             // Log the full request data
             Log::info('Full payment request data', [
                 'request_data' => $request->all()
             ]);
-
-            // Validate request data
+            
+            // Check if this is just a payment method update
+            if ($request->action === 'update_method') {
+                // Only validate the payment method for updates
+                $validator = Validator::make($request->all(), [
+                    'payment_method' => 'required|string|in:bank_transfer,paystack,flutterwave,cash_on_delivery',
+                ]);
+                
+                if ($validator->fails()) {
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'Validation failed',
+                        'errors' => $validator->errors()
+                    ], 422);
+                }
+                
+                $orderId = $request->route('order');
+                
+                // Find the order
+                $order = Order::find($orderId);
+                
+                if (!$order) {
+                    Log::warning('Order not found', [
+                        'order_id' => $orderId
+                    ]);
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'Order not found'
+                    ], 404);
+                }
+                
+                // Update the payment method
+                $order->payment_method = $request->payment_method;
+                $order->save();
+                
+                Log::info('Payment method updated successfully', [
+                    'order_id' => $orderId,
+                    'payment_method' => $request->payment_method
+                ]);
+                
+                return response()->json([
+                    'status' => 'success',
+                    'message' => 'Payment method updated successfully',
+                    'data' => [
+                        'order_id' => $order->id,
+                        'order_number' => $order->order_number,
+                        'payment_method' => $order->payment_method
+                    ]
+                ]);
+            }
+            
+            // For regular payment processing, validate all required fields
             $validator = Validator::make($request->all(), [
                 'payment_method' => 'required|string|in:bank_transfer,paystack,flutterwave,cash_on_delivery',
                 'currency' => 'required|string|size:3',
@@ -148,8 +199,8 @@ class PaymentController extends Controller
                     ],
                     'customizations' => [
                         'title' => 'M-Mart+ Order Payment',
-                        'description' => 'Payment for order #' . $order->id,
-                        'logo' => 'https://cdn.pixabay.com/photo/2016/11/07/13/04/yoga-1805784_960_720.png'
+                        'description' => 'Payment for order #' . $order->id
+                        // No logo specified - will use the one from Flutterwave account
                     ]
                 ];
 
@@ -560,6 +611,13 @@ class PaymentController extends Controller
                         $order->payment_status = 'paid';
                         $order->status = 'processing'; // Update order status to processing
                         $order->save();
+                        
+                        // Cart will be cleared in the frontend after successful payment verification
+                        Log::info('Cart will be cleared in frontend after Flutterwave payment verification', [
+                            'order_id' => $order->id,
+                            'order_number' => $order->order_number,
+                            'transaction_id' => $transactionId
+                        ]);
 
                         try {
                             $user = User::find($order->user_id);
@@ -846,6 +904,432 @@ class PaymentController extends Controller
      * 
      * @return \Illuminate\Http\JsonResponse
      */
+    /**
+     * Initialize a Paystack payment
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function initializePaystackPayment(Request $request)
+    {
+        try {
+            Log::info('Initializing Paystack payment', [
+                'request_data' => $request->except(['metadata'])
+            ]);
+            
+            // Validate request
+            $validator = Validator::make($request->all(), [
+                'email' => 'required|email',
+                'amount' => 'required|numeric',
+                'order_id' => 'required',
+                'callback_url' => 'required|url',
+            ]);
+            
+            if ($validator->fails()) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Validation failed',
+                    'errors' => $validator->errors()
+                ], 422);
+            }
+            
+            // Find the order - handle both numeric IDs and order numbers
+            $orderId = $request->order_id;
+            $order = null;
+            
+            // Check if it's a numeric ID
+            if (is_numeric($orderId)) {
+                $order = Order::find($orderId);
+            } else {
+                // Try to find by order number
+                $order = Order::where('order_number', $orderId)->first();
+            }
+            
+            if (!$order) {
+                Log::warning('Order not found', [
+                    'order_id' => $request->order_id
+                ]);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Order not found'
+                ], 404);
+            }
+            
+            // Get Paystack configuration
+            $secretKey = env('PAYSTACK_SECRET_KEY');
+            
+            if (empty($secretKey)) {
+                Log::error('Paystack API key not configured');
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Payment gateway not properly configured'
+                ], 500);
+            }
+            
+            // Convert amount to kobo (Paystack uses the smallest currency unit)
+            // Ensure it's converted to an integer value as required by Paystack
+            $amount = (int) round($request->amount * 100);
+            
+            // Prepare the request data
+            $data = [
+                'email' => $request->email,
+                'amount' => $amount,
+                'currency' => $request->currency ?? 'NGN',
+                'callback_url' => $request->callback_url,
+                'metadata' => $request->metadata ?? [
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number,
+                ],
+                'reference' => 'MMART-PS-' . time() . '-' . $order->id,
+            ];
+            
+            // Initialize the payment with Paystack
+            $curl = curl_init();
+            
+            curl_setopt_array($curl, [
+                CURLOPT_URL => 'https://api.paystack.co/transaction/initialize',
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_ENCODING => '',
+                CURLOPT_MAXREDIRS => 10,
+                CURLOPT_TIMEOUT => 30,
+                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+                CURLOPT_CUSTOMREQUEST => 'POST',
+                CURLOPT_POSTFIELDS => json_encode($data),
+                CURLOPT_HTTPHEADER => [
+                    'Authorization: Bearer ' . $secretKey,
+                    'Content-Type: application/json',
+                    'Cache-Control: no-cache',
+                ],
+            ]);
+            
+            $response = curl_exec($curl);
+            $err = curl_error($curl);
+            
+            curl_close($curl);
+            
+            if ($err) {
+                Log::error('Paystack API error', [
+                    'error' => $err
+                ]);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Failed to initialize payment: ' . $err
+                ], 500);
+            }
+            
+            $result = json_decode($response, true);
+            
+            if (!$result['status']) {
+                Log::error('Paystack initialization failed', [
+                    'response' => $result
+                ]);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Failed to initialize payment: ' . ($result['message'] ?? 'Unknown error')
+                ], 500);
+            }
+            
+            // Create a payment record
+            $payment = new \App\Models\Payment([
+                'order_id' => $order->id,
+                'payment_method' => 'paystack',
+                'amount' => $request->amount,
+                'currency' => $request->currency ?? 'NGN',
+                'reference' => $result['data']['reference'],
+                'status' => 'pending',
+                'payment_data' => json_encode($result['data']),
+            ]);
+            
+            $payment->save();
+            
+            // Update order payment method
+            $order->payment_method = 'paystack';
+            $order->save();
+            
+            Log::info('Paystack payment initialized successfully', [
+                'order_id' => $order->id,
+                'payment_id' => $payment->id,
+                'reference' => $result['data']['reference']
+            ]);
+            
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Payment initialized successfully',
+                'data' => $result['data']
+            ]);
+            
+        } catch (\Exception $e) {
+            Log::error('Error initializing Paystack payment', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to initialize payment: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Initialize a Flutterwave payment
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function initializeFlutterwavePayment(Request $request)
+    {
+        try {
+            Log::info('Initializing Flutterwave payment', [
+                'request_data' => $request->except(['meta'])
+            ]);
+            
+            // Validate request
+            $validator = Validator::make($request->all(), [
+                'email' => 'required|email',
+                'amount' => 'required|numeric',
+                'order_id' => 'required',
+                'redirect_url' => 'required|url',
+                'name' => 'required|string',
+                'phone_number' => 'required|string',
+                'tx_ref' => 'required|string',
+            ]);
+            
+            if ($validator->fails()) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Validation failed',
+                    'errors' => $validator->errors()
+                ], 422);
+            }
+            
+            // Find the order - handle both numeric IDs and order numbers
+            $orderId = $request->order_id;
+            $order = null;
+            
+            // Check if it's a numeric ID
+            if (is_numeric($orderId)) {
+                $order = Order::find($orderId);
+            } else {
+                // Try to find by order number
+                $order = Order::where('order_number', $orderId)->first();
+            }
+            
+            if (!$order) {
+                Log::warning('Order not found', [
+                    'order_id' => $request->order_id
+                ]);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Order not found'
+                ], 404);
+            }
+            
+            // Get Flutterwave configuration
+            $secretKey = env('FLUTTERWAVE_SECRET_KEY');
+            
+            if (empty($secretKey)) {
+                Log::error('Flutterwave API key not configured');
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Payment gateway not properly configured'
+                ], 500);
+            }
+            
+            // Prepare the request data
+            $data = [
+                'tx_ref' => $request->tx_ref,
+                'amount' => $request->amount,
+                'currency' => $request->currency ?? 'NGN',
+                'redirect_url' => $request->redirect_url,
+                'customer' => [
+                    'email' => $request->email,
+                    'name' => $request->name,
+                    'phonenumber' => $request->phone_number,
+                ],
+                'meta' => $request->meta ?? [
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number,
+                ],
+                'customizations' => [
+                    'title' => 'MMart Order Payment',
+                    'description' => 'Payment for order #' . $order->order_number,
+                    'logo' => env('APP_URL') . '/images/logo.png',
+                ],
+            ];
+            
+            // Initialize the payment with Flutterwave
+            $curl = curl_init();
+            
+            curl_setopt_array($curl, [
+                CURLOPT_URL => 'https://api.flutterwave.com/v3/payments',
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_ENCODING => '',
+                CURLOPT_MAXREDIRS => 10,
+                CURLOPT_TIMEOUT => 30,
+                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+                CURLOPT_CUSTOMREQUEST => 'POST',
+                CURLOPT_POSTFIELDS => json_encode($data),
+                CURLOPT_HTTPHEADER => [
+                    'Authorization: Bearer ' . $secretKey,
+                    'Content-Type: application/json',
+                ],
+            ]);
+            
+            $response = curl_exec($curl);
+            $err = curl_error($curl);
+            
+            curl_close($curl);
+            
+            if ($err) {
+                Log::error('Flutterwave API error', [
+                    'error' => $err
+                ]);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Failed to initialize payment: ' . $err
+                ], 500);
+            }
+            
+            $result = json_decode($response, true);
+            
+            if ($result['status'] !== 'success') {
+                Log::error('Flutterwave initialization failed', [
+                    'response' => $result
+                ]);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Failed to initialize payment: ' . ($result['message'] ?? 'Unknown error')
+                ], 500);
+            }
+            
+            // Create a payment record
+            $payment = new \App\Models\Payment([
+                'order_id' => $order->id,
+                'payment_method' => 'flutterwave',
+                'amount' => $request->amount,
+                'currency' => $request->currency ?? 'NGN',
+                'reference' => $request->tx_ref,
+                'status' => 'pending',
+                'payment_data' => json_encode($result['data']),
+            ]);
+            
+            $payment->save();
+            
+            // Update order payment method
+            $order->payment_method = 'flutterwave';
+            $order->save();
+            
+            Log::info('Flutterwave payment initialized successfully', [
+                'order_id' => $order->id,
+                'payment_id' => $payment->id,
+                'reference' => $request->tx_ref
+            ]);
+            
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Payment initialized successfully',
+                'data' => $result['data']
+            ]);
+            
+        } catch (\Exception $e) {
+            Log::error('Error initializing Flutterwave payment', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to initialize payment: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Update payment method for an existing order
+     *
+     * @param Request $request
+     * @param int $orderId
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function updatePaymentMethod(Request $request, $orderId)
+    {
+        try {
+            Log::info('Updating payment method for order', [
+                'order_id' => $orderId,
+                'payment_method' => $request->payment_method
+            ]);
+            
+            // Validate request - only require payment_method
+            $validator = Validator::make($request->all(), [
+                'payment_method' => 'required|string|in:bank_transfer,paystack,flutterwave,cash_on_delivery',
+            ]);
+            
+            if ($validator->fails()) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Validation failed',
+                    'errors' => $validator->errors()
+                ], 422);
+            }
+            
+            // Find the order
+            $order = Order::find($orderId);
+            
+            if (!$order) {
+                Log::warning('Order not found', [
+                    'order_id' => $orderId
+                ]);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Order not found'
+                ], 404);
+            }
+            
+            // Check if the order belongs to the authenticated user
+            if ($order->user_id !== Auth::id()) {
+                Log::warning('Unauthorized access to order', [
+                    'order_id' => $orderId,
+                    'user_id' => Auth::id(),
+                    'order_user_id' => $order->user_id
+                ]);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Unauthorized'
+                ], 403);
+            }
+            
+            // Update the payment method
+            $order->payment_method = $request->payment_method;
+            $order->save();
+            
+            Log::info('Payment method updated successfully', [
+                'order_id' => $orderId,
+                'payment_method' => $request->payment_method
+            ]);
+            
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Payment method updated successfully',
+                'data' => [
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'payment_method' => $order->payment_method
+                ]
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error updating payment method', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to update payment method: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
     public function getPaymentMethods()
     {
         try {

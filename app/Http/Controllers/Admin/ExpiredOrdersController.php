@@ -24,11 +24,16 @@ class ExpiredOrdersController extends Controller
                 ->with(['user', 'items.product']);
 
             // Apply date filters if provided
-            if ($request->has('start_date') && $request->has('end_date')) {
-                $startDate = Carbon::parse($request->start_date)->startOfDay();
-                $endDate = Carbon::parse($request->end_date)->endOfDay();
-                $query->whereBetween('expired_at', [$startDate, $endDate]);
-            }
+          if ($request->has('start_date') && $request->has('end_date')) {
+          $startDate = Carbon::parse($request->start_date)->startOfDay();
+          $endDate = Carbon::parse($request->end_date)->endOfDay();
+          $query->whereBetween('expired_at', [$startDate, $endDate]);
+      } else {
+          // If no dates provided, default to today
+          $today = Carbon::today();
+          $query->whereDate('expired_at', $today);
+      }
+
 
             // Apply search filter if provided
             if ($request->has('search') && !empty($request->search)) {
