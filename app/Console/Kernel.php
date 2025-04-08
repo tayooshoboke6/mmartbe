@@ -16,7 +16,7 @@ class Kernel extends ConsoleKernel
      */
     protected $commands = [
         ExpireUnpaidOrders::class,
-        
+        CleanupSeededOrders::class,
     ];
 
     /**
@@ -24,12 +24,16 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule): void
     {
-        // Run the order expiration command every 10 minutes to check for orders older than 30 minutes
+        // Run the order expiration command every 10 minutes
         $schedule->command('orders:expire-unpaid --hours=0.5')
-            ->everyTenMinutes()
-            ->withoutOverlapping()
-            ->appendOutputTo(storage_path('logs/order-expiration.log'));
+            ->everyTenMinutes();
+
+        // Run the order expiration command daily at midnight
+        $schedule->command('orders:expire-unpaid')
+            ->daily()
+            ->withoutOverlapping();
     }
+
 
     /**
      * Register the commands for the application.
